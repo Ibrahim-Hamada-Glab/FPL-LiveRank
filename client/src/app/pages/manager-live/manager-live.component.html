@@ -1,0 +1,182 @@
+<main class="mx-auto max-w-5xl px-6 py-8">
+  <header class="mb-8">
+    <h1 class="text-3xl font-semibold tracking-tight">FPL Live Rank</h1>
+    <p class="mt-1 text-sm text-slate-400">Live gameweek points + captaincy projection for any FPL manager.</p>
+  </header>
+
+  <form (ngSubmit)="fetch()" class="flex flex-wrap items-end gap-3 rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+    <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+      Manager ID
+      <input
+        type="number"
+        [ngModel]="managerId()"
+        (ngModelChange)="managerId.set($event)"
+        name="managerId"
+        required
+        min="1"
+        class="mt-1 w-44 rounded-md border-0 bg-slate-800 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent" />
+    </label>
+    <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+      Gameweek (optional)
+      <input
+        type="number"
+        [ngModel]="eventId()"
+        (ngModelChange)="eventId.set($event)"
+        name="eventId"
+        min="1"
+        max="38"
+        placeholder="auto"
+        class="mt-1 w-32 rounded-md border-0 bg-slate-800 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent" />
+    </label>
+    <button
+      type="submit"
+      [disabled]="state().kind === 'loading'"
+      class="rounded-md bg-accent px-4 py-2 font-medium text-pitch transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+      {{ state().kind === 'loading' ? 'Loading…' : 'Get live score' }}
+    </button>
+  </form>
+
+  <form (ngSubmit)="openLeague()" class="mt-3 flex flex-wrap items-end gap-3 rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+    <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+      Mini-league ID
+      <input
+        type="number"
+        [ngModel]="leagueId()"
+        (ngModelChange)="leagueId.set($event)"
+        name="leagueId"
+        required
+        min="1"
+        class="mt-1 w-44 rounded-md border-0 bg-slate-800 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent" />
+    </label>
+    <button
+      type="submit"
+      class="rounded-md bg-slate-100 px-4 py-2 font-medium text-slate-950 transition hover:bg-white">
+      Open league table
+    </button>
+  </form>
+
+  @if (state(); as s) {
+    @switch (s.kind) {
+      @case ('error') {
+        <div class="mt-6 rounded-lg bg-rose-950/60 p-4 ring-1 ring-rose-800/60">
+          <p class="font-medium text-rose-200">{{ s.error.title }}</p>
+          @if (s.error.detail) {
+            <p class="mt-1 text-sm text-rose-300/80">{{ s.error.detail }}</p>
+          }
+        </div>
+      }
+      @case ('success') {
+        <section class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Live GW points</p>
+            <p class="mt-1 text-3xl font-semibold">{{ s.data.livePointsAfterHits }}</p>
+            @if (s.data.transferCost > 0) {
+              <p class="mt-1 text-xs text-slate-400">Raw {{ s.data.rawLivePoints }} − hit {{ s.data.transferCost }}</p>
+            }
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Live season total</p>
+            <p class="mt-1 text-3xl font-semibold">{{ s.data.liveSeasonTotal }}</p>
+            <p class="mt-1 text-xs text-slate-400">Was {{ s.data.previousTotal }} after GW {{ s.data.eventId - 1 }}</p>
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Active chip</p>
+            <p class="mt-1 text-2xl font-semibold">{{ s.data.activeChip }}</p>
+            <p class="mt-1 text-xs text-slate-400">Gameweek {{ s.data.eventId }}</p>
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Captaincy</p>
+            <p class="mt-2">
+              <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset"
+                [class]="captaincyBadgeClass(s.data.captaincyStatus)">
+                {{ captaincyLabel(s.data.captaincyStatus) }}
+              </span>
+            </p>
+          </div>
+        </section>
+
+        @if (s.data.autoSubs.length > 0 || s.data.blockedStarterElementIds.length > 0) {
+          <section class="mt-6 rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <div class="flex items-baseline justify-between">
+              <h2 class="text-sm font-medium uppercase tracking-wide text-slate-400">Auto-subs</h2>
+              <span class="text-xs"
+                    [class.text-amber-300]="!s.data.autoSubProjectionFinal"
+                    [class.text-emerald-300]="s.data.autoSubProjectionFinal">
+                {{ s.data.autoSubProjectionFinal ? 'Final' : 'Projected' }}
+              </span>
+            </div>
+            <ul class="mt-3 space-y-1 text-sm">
+              @for (sub of s.data.autoSubs; track sub.inElementId) {
+                <li class="flex items-center gap-2">
+                  <span class="text-rose-300">{{ webName(sub.outElementId) }}</span>
+                  <span class="text-slate-500">→</span>
+                  <span class="text-emerald-300">{{ webName(sub.inElementId) }}</span>
+                </li>
+              }
+              @for (id of s.data.blockedStarterElementIds; track id) {
+                <li class="text-amber-300">
+                  {{ webName(id) }} — blanked, no eligible bench replacement
+                </li>
+              }
+            </ul>
+          </section>
+        }
+
+        <section class="mt-6">
+          <h2 class="mb-2 text-sm font-medium uppercase tracking-wide text-slate-400">Starters</h2>
+          <ng-container *ngTemplateOutlet="pickTable; context: { picks: starters() }"></ng-container>
+        </section>
+
+        <section class="mt-6">
+          <h2 class="mb-2 text-sm font-medium uppercase tracking-wide text-slate-400">Bench</h2>
+          <ng-container *ngTemplateOutlet="pickTable; context: { picks: bench() }"></ng-container>
+        </section>
+
+        <p class="mt-6 text-right text-xs text-slate-500">
+          Calculated {{ s.data.calculatedAtUtc | date:'mediumTime' }} · GW {{ s.data.eventId }}
+        </p>
+      }
+    }
+  }
+
+  <ng-template #pickTable let-picks="picks">
+    <div class="overflow-x-auto rounded-lg bg-slate-900/60 ring-1 ring-slate-700/60">
+      <table class="min-w-full divide-y divide-slate-800 text-sm">
+        <thead class="text-left text-xs uppercase tracking-wide text-slate-400">
+          <tr>
+            <th class="px-3 py-2">Pos</th>
+            <th class="px-3 py-2">Player</th>
+            <th class="px-3 py-2 text-right">×</th>
+            <th class="px-3 py-2 text-right">Pts</th>
+            <th class="px-3 py-2 text-right">Min</th>
+            <th class="px-3 py-2 text-right">Bonus</th>
+            <th class="px-3 py-2 text-right">Contrib</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-800/60">
+          @for (p of picks; track p.elementId) {
+            <tr [ngClass]="p.isCaptain ? 'bg-slate-800' : (p.isViceCaptain ? 'bg-slate-800/40' : '')">
+              <td class="px-3 py-2 text-slate-400">{{ positionLabel(p.elementType) }}</td>
+              <td class="px-3 py-2">
+                <span [class.line-through]="subbedOutIds().has(p.elementId)"
+                      [class.text-slate-500]="subbedOutIds().has(p.elementId)">
+                  {{ p.webName }}
+                </span>
+                @if (p.isCaptain) { <span class="ml-1 rounded bg-accent/20 px-1.5 py-0.5 text-[10px] font-medium text-accent">C</span> }
+                @if (p.isViceCaptain) { <span class="ml-1 rounded bg-slate-600/40 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">V</span> }
+                @if (subbedInIds().has(p.elementId)) { <span class="ml-1 rounded bg-emerald-600/20 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">SUB IN</span> }
+                @if (subbedOutIds().has(p.elementId)) { <span class="ml-1 rounded bg-rose-600/20 px-1.5 py-0.5 text-[10px] font-medium text-rose-300">SUB OUT</span> }
+                @if (blockedIds().has(p.elementId)) { <span class="ml-1 rounded bg-amber-600/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">BLANKED</span> }
+              </td>
+              <td class="px-3 py-2 text-right text-slate-400">{{ p.multiplier }}</td>
+              <td class="px-3 py-2 text-right">{{ p.liveTotalPoints }}</td>
+              <td class="px-3 py-2 text-right text-slate-400">{{ p.minutes }}</td>
+              <td class="px-3 py-2 text-right text-slate-400">{{ p.bonus }}</td>
+              <td class="px-3 py-2 text-right font-medium">{{ p.contributedPoints }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </ng-template>
+</main>

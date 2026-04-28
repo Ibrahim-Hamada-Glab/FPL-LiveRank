@@ -1,0 +1,1034 @@
+Act as a senior full-stack engineer, senior football analytics engineer, and FPL product architect.
+
+I already have / I am building a “Live FPL Rank” application using:
+
+Backend:
+- .NET 10 Web API
+- Clean Architecture / layered architecture
+- EF Core
+- PostgreSQL
+- Redis
+- SignalR
+- Hangfire or Quartz
+- Public Fantasy Premier League API endpoints
+
+Frontend:
+- Angular
+- TypeScript
+- Professional dashboard UI
+
+Now I want to add a new professional feature:
+
+“Player Recommendations and Projected Points Engine”
+
+The goal is to recommend players to buy, sell, captain, avoid, or monitor based on projected FPL points, fixtures, player form, expected minutes, ownership, risk, and squad constraints.
+
+Do not use paid APIs for MVP.
+Do not copy any paid provider algorithm, UI, branding, endpoint, or response shape.
+Use public/free FPL data and our own original calculations.
+
+========================================
+1. FEATURE GOAL
+========================================
+
+Build a projection and recommendation engine that can:
+
+1. Calculate projected points for each FPL player over:
+   - Next 1 Gameweek
+   - Next 3 Gameweeks
+   - Next 5 Gameweeks
+   - Custom horizon
+
+2. Recommend:
+   - Best transfer in
+   - Best transfer out
+   - Best captain
+   - Best vice-captain
+   - Best differential
+   - Best budget player
+   - Best long-term pick
+   - Best one-week punt
+   - Best player to avoid
+   - Best replacement for a selected player
+
+3. Analyze the user’s current squad and suggest:
+   - Weak players
+   - Underperforming players
+   - Rotation risks
+   - Injured/flagged players
+   - Expensive low-value players
+   - Better alternatives within budget
+
+4. Explain every recommendation clearly.
+
+Example explanation:
+
+“Saka is recommended because he is projected to score 31.4 points over the next 5 gameweeks, which is +7.8 better than your current midfielder. He has strong fixtures, high expected minutes, good recent form, and strong captaincy potential. Risk: high ownership, so he is not a strong differential.”
+
+========================================
+2. DATA SOURCES
+========================================
+
+Use free/public FPL endpoints only.
+
+Required endpoints:
+
+GET /api/bootstrap-static/
+Purpose:
+- Players
+- Teams
+- Current prices
+- Ownership
+- Status / injury flags
+- Element type
+- Total points
+- Form
+- Points per game
+- Selected by percent
+- Team strength data if available
+
+GET /api/fixtures/
+Purpose:
+- Upcoming fixtures
+- Finished fixtures
+- Home/away
+- Team difficulty
+- Event/gameweek
+- Opponent
+
+GET /api/event/{eventId}/live/
+Purpose:
+- Current GW live player stats
+- Minutes
+- Goals
+- Assists
+- Clean sheets
+- Bonus
+- BPS
+- Cards
+- Saves
+- Goals conceded
+
+GET /api/entry/{managerId}/event/{eventId}/picks/
+Purpose:
+- User current squad
+- Captain
+- Vice captain
+- Bench
+- Player positions
+- Active chip if available
+
+GET /api/entry/{managerId}/history/
+Purpose:
+- Current manager history
+- Transfer cost
+- Previous totals
+- Chips if available
+
+Optional:
+GET /api/leagues-classic/{leagueId}/standings/
+Purpose:
+- Mini-league members
+- Differential suggestions based on ownership inside mini-league
+
+Important:
+- All FPL calls must be done from backend only.
+- Angular must call our backend API only.
+- Cache FPL API responses using Redis.
+- Add retry, timeout, and fallback handling.
+
+========================================
+3. CORE CONCEPT
+========================================
+
+The projection engine should estimate expected FPL points.
+
+Do not use advanced ML in MVP.
+Use a transparent weighted scoring model that can be improved later.
+
+Base formula:
+
+ProjectedPoints =
+BasePointsPer90
+× ExpectedMinutesFactor
+× FixtureMultiplier
+× FormMultiplier
+× StartProbability
++ CleanSheetExpectedPoints
++ BonusExpectedPoints
++ DefensiveContributionExpectedPoints
+- RiskPenalty
+- CardPenalty
+- GoalsConcededPenalty
+
+The model should be configurable.
+
+Use weights from appsettings.json or database so we can tune later without changing code.
+
+========================================
+4. PLAYER PROJECTION MODEL
+========================================
+
+Create a pure, unit-testable projection calculator.
+
+Suggested inputs:
+
+PlayerProjectionInput:
+- PlayerId
+- WebName
+- TeamId
+- Position
+- Price
+- Status
+- ChanceOfPlayingNextRound
+- ChanceOfPlayingThisRound
+- SelectedByPercent
+- Form
+- PointsPerGame
+- TotalPoints
+- Minutes
+- GoalsScored
+- Assists
+- CleanSheets
+- GoalsConceded
+- Saves
+- Bonus
+- Bps
+- YellowCards
+- RedCards
+- OwnGoals
+- PenaltiesSaved
+- PenaltiesMissed
+- RecentMatches
+- UpcomingFixtures
+- TeamAttackStrength
+- TeamDefenceStrength
+- OpponentStrength
+- HomeAway
+
+Suggested output:
+
+PlayerProjectionResult:
+- PlayerId
+- WebName
+- Position
+- TeamName
+- Price
+- ProjectedPoints1Gw
+- ProjectedPoints3Gw
+- ProjectedPoints5Gw
+- ExpectedMinutes
+- StartProbability
+- FixtureScore
+- FormScore
+- RiskScore
+- ValueScore
+- CaptaincyScore
+- DifferentialScore
+- RecommendationTags
+- Explanation
+
+========================================
+5. EXPECTED MINUTES MODEL
+========================================
+
+Expected minutes are very important.
+
+Implement ExpectedMinutesCalculator.
+
+Inputs:
+- Average minutes over recent matches
+- Starts in recent matches
+- Injury/availability status
+- Chance of playing from FPL data
+- Suspension/red flag
+- Rotation pattern
+- Fixture congestion
+
+Simple MVP logic:
+
+If player status is unavailable:
+ExpectedMinutes = 0
+
+If chance_of_playing_next_round exists:
+AvailabilityFactor = chance_of_playing_next_round / 100
+
+RecentAverageMinutes = average minutes from available recent data
+
+StartProbability =
+recentStarts / recentMatches
+
+ExpectedMinutes =
+RecentAverageMinutes × AvailabilityFactor
+
+Clamp ExpectedMinutes between 0 and 90.
+
+Risk examples:
+- 90 mins often => low risk
+- 60-70 mins often => medium risk
+- inconsistent starts => high risk
+- injury flag => high risk
+- suspended/unavailable => avoid
+
+Return:
+- ExpectedMinutes
+- StartProbability
+- MinutesRiskLevel: Low / Medium / High
+- Explanation
+
+========================================
+6. FIXTURE DIFFICULTY MODEL
+========================================
+
+Implement FixtureDifficultyCalculator.
+
+For each upcoming fixture:
+Calculate a fixture multiplier based on:
+
+- Home/away
+- Opponent strength
+- Player position
+- Team attacking strength
+- Team defensive strength
+- FPL fixture difficulty if available
+- Double gameweek
+- Blank gameweek
+
+Simple default multipliers:
+
+Very easy fixture: 1.20
+Easy fixture: 1.10
+Medium fixture: 1.00
+Hard fixture: 0.90
+Very hard fixture: 0.80
+
+Position-specific logic:
+- Attackers benefit from weak opponent defence
+- Defenders/GKs benefit from weak opponent attack
+- Midfielders use mixed logic
+
+Double Gameweek:
+- Project both fixtures and add them together
+
+Blank Gameweek:
+- Project 0 points
+
+Return:
+- FixtureScore
+- FixtureMultiplier
+- FixtureDifficultyLabel
+- FixtureExplanation
+
+========================================
+7. FORM MODEL
+========================================
+
+Implement FormCalculator.
+
+Use:
+- Recent points
+- Recent minutes
+- Recent goals
+- Recent assists
+- Recent bonus
+- Recent BPS
+- Current FPL form value if available
+
+Simple MVP logic:
+
+FormMultiplier:
+- Excellent form: 1.15
+- Good form: 1.08
+- Normal form: 1.00
+- Bad form: 0.92
+- Very bad form: 0.85
+
+Avoid overreacting to one match.
+Use rolling averages over recent gameweeks where possible.
+
+Return:
+- FormScore
+- FormMultiplier
+- FormLabel
+- Explanation
+
+========================================
+8. CLEAN SHEET / DEFENSIVE POINTS
+========================================
+
+Implement expected clean sheet points.
+
+For GK/DEF:
+- High clean sheet chance gives stronger projection
+- Goals conceded risk reduces projection
+
+For MID:
+- Clean sheet point is smaller but still included
+
+For FWD:
+- No clean sheet points
+
+Simple model:
+
+CleanSheetExpectedPoints =
+PositionCleanSheetPoints × CleanSheetProbability
+
+PositionCleanSheetPoints:
+- GK = 4
+- DEF = 4
+- MID = 1
+- FWD = 0
+
+CleanSheetProbability can be approximated from:
+- Team defensive strength
+- Opponent attacking strength
+- Home/away
+- Recent clean sheets
+
+========================================
+9. BONUS POINTS MODEL
+========================================
+
+Implement BonusProjectionCalculator.
+
+Approximate bonus using:
+- Historical bonus per 90
+- BPS per 90
+- Player position
+- Expected minutes
+- Goal/assist involvement likelihood
+
+Simple MVP:
+
+ExpectedBonus =
+AverageBonusPer90 × ExpectedMinutes / 90 × FixtureMultiplier
+
+Clamp to reasonable range.
+
+========================================
+10. RISK MODEL
+========================================
+
+Implement RiskCalculator.
+
+Risk factors:
+- Injury flag
+- Low chance of playing
+- Rotation risk
+- Poor recent minutes
+- Suspension
+- Red cards
+- Expensive price with low output
+- Blank fixture
+- Difficult fixtures
+- High transfer-in hype but low expected minutes
+
+Return:
+- RiskScore from 0 to 100
+- RiskLevel: Low / Medium / High / Avoid
+- RiskPenalty
+- RiskReasons list
+
+Example:
+“High rotation risk because he started only 2 of the last 5 matches and averaged 42 minutes.”
+
+========================================
+11. VALUE MODEL
+========================================
+
+Implement ValueCalculator.
+
+Calculate:
+
+ProjectedValue =
+ProjectedPoints / Price
+
+Also calculate:
+
+ValueScore =
+ProjectedPoints5Gw / Price
+
+Use this to recommend budget picks.
+
+Return:
+- ValueScore
+- ValueLabel
+- Explanation
+
+========================================
+12. DIFFERENTIAL MODEL
+========================================
+
+Implement DifferentialCalculator.
+
+Use ownership percentage.
+
+Differential logic:
+- Low ownership + high projected points = strong differential
+- High ownership + high projected points = template/safe pick
+- Low ownership + low projected points = bad differential
+
+Suggested labels:
+- Template
+- Safe Pick
+- Strong Differential
+- Risky Differential
+- Avoid
+
+Formula idea:
+
+DifferentialScore =
+ProjectedPoints5Gw × (1 - OwnershipPercent / 100)
+
+But avoid recommending bad low-owned players only because ownership is low.
+
+Minimum projected points threshold must be used.
+
+========================================
+13. CAPTAINCY RECOMMENDATION
+========================================
+
+Implement CaptainRecommendationService.
+
+CaptainScore should consider:
+- Projected next GW points
+- Expected minutes
+- Fixture difficulty
+- Goal/assist/clean sheet potential
+- Bonus potential
+- Risk
+- Effective ownership if available
+- Explosive ceiling
+
+CaptainScore formula example:
+
+CaptainScore =
+ProjectedPoints1Gw
+× StartProbability
+× CeilingMultiplier
+- RiskPenalty
+
+Return top captain options:
+- Best safe captain
+- Best differential captain
+- Best vice captain
+
+Explain:
+- Why recommended
+- Expected points
+- Risk
+- Fixture
+- Minutes expectation
+
+========================================
+14. TRANSFER RECOMMENDATION ENGINE
+========================================
+
+Implement TransferRecommendationService.
+
+It should analyze the user’s squad and recommend transfer moves.
+
+Inputs:
+- Manager ID
+- Event ID
+- Current squad
+- Bank/budget if available
+- Free transfers if available
+- Transfer cost/hit
+- All available players
+- Projection horizon: 1, 3, 5 GWs
+
+Rules:
+- Respect budget
+- Respect max 3 players per Premier League team
+- Respect valid FPL formation
+- Compare same-position replacements first
+- Allow multi-transfer suggestions later
+- MVP can start with one-transfer recommendations
+
+For each player in user squad:
+1. Calculate current player projected points.
+2. Find possible replacements in same position.
+3. Calculate replacement projected points.
+4. Calculate net gain.
+
+Formula:
+
+NetGain =
+ReplacementProjectedPoints
+- CurrentPlayerProjectedPoints
+- TransferHitCost
+
+RecommendationScore =
+NetGain
++ ValueBonus
++ FixtureSwingBonus
++ DifferentialBonus
+- RiskPenalty
+
+Return:
+- TransferOutPlayer
+- TransferInPlayer
+- NetGain
+- ProjectedGainBeforeHit
+- TransferHit
+- BudgetImpact
+- Reason
+- Risk
+- Confidence
+
+Recommendation types:
+- Best Overall Transfer
+- Best Safe Transfer
+- Best Differential Transfer
+- Best Budget Transfer
+- Best Long-Term Transfer
+- Best One-Week Punt
+
+========================================
+15. SELL / AVOID RECOMMENDATION
+========================================
+
+Implement SellRecommendationService.
+
+Detect players to sell/avoid based on:
+
+- Low projected points
+- Bad fixtures
+- Low expected minutes
+- Injury flag
+- Suspension
+- Rotation risk
+- Poor value
+- High price but weak output
+- Blank gameweek
+- Not nailed
+
+Return:
+- Player
+- SellUrgency: Low / Medium / High
+- Reason
+- Suggested replacements
+
+Example:
+“Sell urgency: High. Player is flagged, expected minutes are 28, next 3 fixtures are difficult, and projected points are only 5.2.”
+
+========================================
+16. SQUAD ANALYSIS
+========================================
+
+Implement SquadAnalysisService.
+
+For a manager squad, return:
+
+- Squad projected points next 1/3/5 GWs
+- Best captain
+- Weakest starters
+- Weakest bench
+- Best transfer out
+- Best transfer in
+- Squad risk level
+- Fixture difficulty summary
+- Position-by-position strength
+- Recommended action:
+  - Save transfer
+  - Make one transfer
+  - Consider hit
+  - Wildcard candidate
+  - Bench Boost opportunity
+  - Triple Captain opportunity
+
+MVP should support:
+- Save transfer recommendation
+- One-transfer recommendation
+- Captain recommendation
+
+Later can support:
+- Multi-transfer optimization
+- Wildcard team
+- Free Hit team
+- Bench Boost planner
+
+========================================
+17. RECOMMENDATION EXPLANATION ENGINE
+========================================
+
+Every recommendation must be explainable.
+
+Create ExplanationBuilder.
+
+For each recommendation, include:
+
+- Main reason
+- Projected points comparison
+- Fixture explanation
+- Expected minutes explanation
+- Form explanation
+- Risk explanation
+- Value explanation
+- Ownership/differential explanation
+- Confidence level
+
+Example response:
+
+{
+  "recommendationType": "BestTransferIn",
+  "player": "Saka",
+  "projectedPoints5Gw": 31.4,
+  "confidence": "High",
+  "reasons": [
+    "Projected to score 31.4 points over the next 5 gameweeks.",
+    "Has strong expected minutes with 88.5 expected minutes per match.",
+    "Next 3 fixtures are rated easy or medium.",
+    "Better value than similar midfielders in the same price range."
+  ],
+  "risks": [
+    "High ownership means limited differential upside."
+  ]
+}
+
+========================================
+18. API ENDPOINTS
+========================================
+
+Create backend endpoints:
+
+GET /api/recommendations/players/projected
+Query:
+- eventId
+- horizon=1|3|5
+- position optional
+- maxPrice optional
+- teamId optional
+- includeUnavailable=false
+
+Returns:
+- Ranked projected players
+
+GET /api/recommendations/manager/{managerId}/squad-analysis
+Query:
+- eventId optional
+- horizon default 5
+
+Returns:
+- Squad analysis
+- Best captain
+- Transfer recommendations
+- Sell recommendations
+- Risk analysis
+
+GET /api/recommendations/manager/{managerId}/transfers
+Query:
+- eventId optional
+- horizon default 5
+- maxSuggestions default 10
+
+Returns:
+- Transfer recommendations
+
+GET /api/recommendations/captains
+Query:
+- eventId optional
+- horizon default 1
+- managerId optional
+
+Returns:
+- Best captain options
+
+GET /api/recommendations/players/{playerId}/projection
+Query:
+- eventId optional
+- horizon default 5
+
+Returns:
+- Detailed projection breakdown
+
+GET /api/recommendations/players/compare
+Query:
+- playerIds
+- eventId optional
+- horizon default 5
+
+Returns:
+- Side-by-side projection comparison
+
+========================================
+19. RESPONSE DTO EXAMPLES
+========================================
+
+PlayerProjectionDto:
+- playerId
+- webName
+- teamName
+- position
+- price
+- selectedByPercent
+- projectedPoints1Gw
+- projectedPoints3Gw
+- projectedPoints5Gw
+- expectedMinutes
+- startProbability
+- fixtureScore
+- formScore
+- riskScore
+- valueScore
+- differentialScore
+- captaincyScore
+- confidence
+- tags
+- explanation
+
+TransferRecommendationDto:
+- transferOutPlayerId
+- transferOutPlayerName
+- transferInPlayerId
+- transferInPlayerName
+- position
+- currentPlayerProjectedPoints
+- targetPlayerProjectedPoints
+- projectedGain
+- transferHit
+- netGain
+- budgetChange
+- recommendationScore
+- confidence
+- recommendationType
+- reasons
+- risks
+
+SquadAnalysisDto:
+- managerId
+- eventId
+- projectedPoints1Gw
+- projectedPoints3Gw
+- projectedPoints5Gw
+- bestCaptain
+- bestViceCaptain
+- weakestPlayers
+- transferRecommendations
+- sellRecommendations
+- squadRiskLevel
+- summary
+- recommendedAction
+
+========================================
+20. FRONTEND REQUIREMENTS
+========================================
+
+Add Angular pages/components:
+
+1. Player Projections Page
+- Table of all players
+- Sort by projected points
+- Filter by position
+- Filter by price
+- Filter by team
+- Filter by ownership
+- Show 1GW / 3GW / 5GW projections
+- Show risk/confidence
+
+2. Squad Recommendations Page
+- Input manager ID
+- Show squad analysis
+- Best captain card
+- Best transfer recommendations
+- Weak players
+- Save transfer / make transfer recommendation
+
+3. Transfer Suggestions Page
+- Transfer out
+- Transfer in
+- Projected gain
+- Net gain after hit
+- Budget impact
+- Confidence
+- Explanation
+
+4. Captaincy Page
+- Best safe captain
+- Best differential captain
+- Best vice captain
+- Risk comparison
+
+5. Player Compare Page
+- Compare 2-4 players
+- Points projection
+- Fixtures
+- Form
+- Minutes
+- Risk
+- Value
+- Ownership
+
+UI requirements:
+- Professional dashboard
+- Clear cards and tables
+- Loading skeletons
+- Error states
+- Empty states
+- Responsive
+- Tooltips explaining metrics
+- Color-coded risk/confidence badges
+- Explanation panel for every recommendation
+
+========================================
+21. CACHING
+========================================
+
+Use Redis cache for:
+
+- Player projections per event/horizon
+- Manager squad analysis
+- Transfer recommendations
+- Captain recommendations
+- Fixtures
+- Bootstrap data
+
+Suggested keys:
+
+projection:event:{eventId}:horizon:{horizon}
+projection:player:{playerId}:event:{eventId}:horizon:{horizon}
+recommendation:manager:{managerId}:event:{eventId}:horizon:{horizon}
+recommendation:captains:event:{eventId}
+recommendation:transfers:manager:{managerId}:event:{eventId}:horizon:{horizon}
+
+TTL:
+- During active gameweek: 5-15 minutes
+- Outside matches: 30-60 minutes
+- After deadline: manager picks can be cached longer
+- Bootstrap: 30-60 minutes
+
+========================================
+22. CONFIGURATION
+========================================
+
+Add configurable model weights in appsettings.json:
+
+"ProjectionWeights": {
+  "BasePointsPer90Weight": 1.0,
+  "ExpectedMinutesWeight": 1.0,
+  "FixtureMultiplierWeight": 1.0,
+  "FormMultiplierWeight": 1.0,
+  "CleanSheetWeight": 1.0,
+  "BonusWeight": 1.0,
+  "RiskPenaltyWeight": 1.0,
+  "ValueWeight": 0.3,
+  "DifferentialWeight": 0.2
+}
+
+Add ability to tune:
+- Fixture multipliers
+- Form multipliers
+- Risk penalties
+- Position-specific weights
+- Minimum minutes threshold
+- Minimum projected points threshold for recommendations
+
+========================================
+23. TESTING REQUIREMENTS
+========================================
+
+Create unit tests for:
+
+- ExpectedMinutesCalculator
+- FixtureDifficultyCalculator
+- FormCalculator
+- RiskCalculator
+- ValueCalculator
+- DifferentialCalculator
+- PlayerProjectionCalculator
+- CaptainRecommendationService
+- TransferRecommendationService
+- SquadAnalysisService
+- ExplanationBuilder
+
+Test cases:
+1. Injured player should have low/zero projection.
+2. Player with high points but low expected minutes should be penalized.
+3. Easy fixture should increase projected points.
+4. Hard fixture should reduce projected points.
+5. High ownership should reduce differential score.
+6. Low ownership plus high projection should create strong differential.
+7. Transfer recommendation should respect budget.
+8. Transfer recommendation should respect max 3 players per team.
+9. Captain recommendation should prefer high projection and low risk.
+10. Avoid recommendation should trigger for flagged/rotated players.
+
+========================================
+24. IMPORTANT LIMITATIONS
+========================================
+
+Clearly document:
+
+- MVP projections are estimates, not guarantees.
+- Free FPL data does not include full xG/xA/shot-level event data.
+- Model does not copy paid tools.
+- Projection quality depends on available public data.
+- Human team news is not fully automated in MVP.
+- Overall recommendations should be explainable and transparent.
+
+========================================
+25. IMPLEMENTATION ORDER
+========================================
+
+Implement in this order:
+
+Phase 1:
+- Domain models and DTOs
+- Projection configuration
+- Basic PlayerProjectionCalculator
+- ExpectedMinutesCalculator
+- FixtureDifficultyCalculator
+- FormCalculator
+- RiskCalculator
+
+Phase 2:
+- API endpoint for player projections
+- Angular Player Projections page
+
+Phase 3:
+- CaptainRecommendationService
+- Captain recommendations endpoint
+- Angular Captaincy page
+
+Phase 4:
+- TransferRecommendationService
+- SquadAnalysisService
+- Manager squad recommendation endpoint
+- Angular Squad Recommendations page
+
+Phase 5:
+- Differential, value, and explanation improvements
+- Player compare page
+
+Phase 6:
+- Unit tests
+- Caching
+- README documentation
+- Polish UI
+
+========================================
+26. OUTPUT EXPECTATION
+========================================
+
+Before writing code:
+1. Produce architecture summary for this feature.
+2. Produce final folder/file structure.
+3. Produce projection model explanation.
+4. Produce DTO design.
+5. Then start implementation.
+
+When implementing:
+- Keep calculators pure and unit-testable.
+- Keep controllers thin.
+- Keep business logic in Application layer.
+- Keep FPL API calls in Infrastructure layer.
+- Use async/await and CancellationToken.
+- Use Redis cache where useful.
+- Write clean production-style code.
+- Avoid fake hardcoded data except sample fixtures for tests.
+- Include XML/comments only for complex calculation logic.
+- Add README section explaining the projection formula and limitations.
+
+Final result:
+A professional Player Recommendation and Projected Points feature integrated into the Live FPL Rank application.

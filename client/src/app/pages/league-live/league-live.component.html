@@ -1,0 +1,163 @@
+<main class="mx-auto max-w-6xl px-6 py-8">
+  <header class="mb-8 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+    <div>
+      <a routerLink="/" class="text-sm font-medium text-accent hover:brightness-110">Manager live score</a>
+      <h1 class="mt-2 text-3xl font-semibold tracking-tight">Live Mini-league Rank</h1>
+      <p class="mt-1 text-sm text-slate-400">Exact live table from public FPL standings and local live-score calculations.</p>
+    </div>
+  </header>
+
+  <form (ngSubmit)="fetch()" class="flex flex-wrap items-end gap-3 rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+    <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+      League ID
+      <input
+        type="number"
+        [ngModel]="leagueId()"
+        (ngModelChange)="leagueId.set($event)"
+        name="leagueId"
+        required
+        min="1"
+        class="mt-1 w-44 rounded-md border-0 bg-slate-800 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent" />
+    </label>
+    <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+      Gameweek (optional)
+      <input
+        type="number"
+        [ngModel]="eventId()"
+        (ngModelChange)="eventId.set($event)"
+        name="eventId"
+        min="1"
+        max="38"
+        placeholder="auto"
+        class="mt-1 w-32 rounded-md border-0 bg-slate-800 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent" />
+    </label>
+    <button
+      type="submit"
+      [disabled]="state().kind === 'loading'"
+      class="rounded-md bg-accent px-4 py-2 font-medium text-pitch transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+      {{ state().kind === 'loading' ? 'Loading…' : 'Get league table' }}
+    </button>
+  </form>
+
+  @if (state(); as s) {
+    @switch (s.kind) {
+      @case ('error') {
+        <div class="mt-6 rounded-lg bg-rose-950/60 p-4 ring-1 ring-rose-800/60">
+          <p class="font-medium text-rose-200">{{ s.error.title }}</p>
+          @if (s.error.detail) {
+            <p class="mt-1 text-sm text-rose-300/80">{{ s.error.detail }}</p>
+          }
+        </div>
+      }
+      @case ('success') {
+        <section class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">League</p>
+            <p class="mt-1 truncate text-2xl font-semibold">{{ s.data.leagueName || ('#' + s.data.leagueId) }}</p>
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Managers</p>
+            <p class="mt-1 text-3xl font-semibold">{{ s.data.managerCount }}</p>
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Gameweek</p>
+            <p class="mt-1 text-3xl font-semibold">{{ s.data.eventId }}</p>
+          </div>
+          <div class="rounded-lg bg-slate-900/60 p-4 ring-1 ring-slate-700/60">
+            <p class="text-xs uppercase tracking-wide text-slate-400">Calculated</p>
+            <p class="mt-2 text-sm font-medium">{{ s.data.calculatedAtUtc | date:'mediumTime' }}</p>
+          </div>
+        </section>
+
+        <section class="mt-6">
+          <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <label class="flex flex-col text-xs uppercase tracking-wide text-slate-400">
+              Search
+              <input
+                type="search"
+                [ngModel]="search()"
+                (ngModelChange)="search.set($event)"
+                name="search"
+                class="mt-1 w-full rounded-md border-0 bg-slate-900 px-3 py-2 text-base text-slate-100 ring-1 ring-slate-700 focus:outline-none focus:ring-2 focus:ring-accent sm:w-72" />
+            </label>
+            <p class="text-sm text-slate-400">{{ rows().length }} shown</p>
+          </div>
+
+          <div class="overflow-x-auto rounded-lg bg-slate-900/60 ring-1 ring-slate-700/60">
+            <table class="min-w-full divide-y divide-slate-800 text-sm">
+              <thead class="text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th class="px-3 py-2">
+                    <button type="button" class="font-medium" (click)="setSort('liveRank')">Live {{ sortMark('liveRank') }}</button>
+                  </th>
+                  <th class="px-3 py-2">
+                    <button type="button" class="font-medium" (click)="setSort('officialRank')">Official {{ sortMark('officialRank') }}</button>
+                  </th>
+                  <th class="px-3 py-2 text-right">
+                    <button type="button" class="font-medium" (click)="setSort('rankChange')">Move {{ sortMark('rankChange') }}</button>
+                  </th>
+                  <th class="px-3 py-2">
+                    <button type="button" class="font-medium" (click)="setSort('entryName')">Team {{ sortMark('entryName') }}</button>
+                  </th>
+                  <th class="px-3 py-2">Manager</th>
+                  <th class="px-3 py-2 text-right">
+                    <button type="button" class="font-medium" (click)="setSort('liveGwPoints')">GW {{ sortMark('liveGwPoints') }}</button>
+                  </th>
+                  <th class="px-3 py-2 text-right">
+                    <button type="button" class="font-medium" (click)="setSort('liveTotal')">Live total {{ sortMark('liveTotal') }}</button>
+                  </th>
+                  <th class="px-3 py-2 text-right">Official total</th>
+                  <th class="px-3 py-2">Captain</th>
+                  <th class="px-3 py-2">Chip</th>
+                  <th class="px-3 py-2 text-right">Subs</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/60">
+                @for (row of rows(); track row.managerId) {
+                  <tr>
+                    <td class="px-3 py-2 font-semibold">
+                      {{ row.liveRank }}
+                      @if (row.isTiedOnLiveTotal) {
+                        <span class="ml-1 rounded bg-slate-700/60 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">TIE</span>
+                      }
+                    </td>
+                    <td class="px-3 py-2 text-slate-400">{{ row.officialRank }}</td>
+                    <td class="px-3 py-2 text-right font-medium" [class]="movementClass(row.rankChange)">
+                      {{ movementText(row.rankChange) }}
+                    </td>
+                    <td class="px-3 py-2">
+                      <a
+                        routerLink="/"
+                        [queryParams]="{ managerId: row.managerId, eventId: s.data.eventId }"
+                        class="font-medium text-slate-100 hover:text-accent">
+                        {{ row.entryName }}
+                      </a>
+                    </td>
+                    <td class="px-3 py-2 text-slate-400">{{ row.playerName }}</td>
+                    <td class="px-3 py-2 text-right font-medium">
+                      {{ row.liveGwPoints }}
+                      @if (row.transferCost > 0) {
+                        <span class="ml-1 text-xs text-rose-300">-{{ row.transferCost }}</span>
+                      }
+                    </td>
+                    <td class="px-3 py-2 text-right font-semibold">{{ row.liveTotal }}</td>
+                    <td class="px-3 py-2 text-right text-slate-400">{{ row.officialTotal }}</td>
+                    <td class="px-3 py-2 text-slate-300">{{ row.captainName || '—' }}</td>
+                    <td class="px-3 py-2 text-slate-400">{{ row.activeChip }}</td>
+                    <td class="px-3 py-2 text-right">
+                      @if (row.autoSubs.length > 0) {
+                        <span class="font-medium text-emerald-300">{{ row.autoSubs.length }}</span>
+                      } @else {
+                        <span class="text-slate-500">0</span>
+                      }
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        </section>
+      }
+    }
+  }
+</main>

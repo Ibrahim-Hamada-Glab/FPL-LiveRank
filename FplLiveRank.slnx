@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FplLiveRank.Api/FplLiveRank.Api.csproj" />
+    <Project Path="src/FplLiveRank.Application/FplLiveRank.Application.csproj" />
+    <Project Path="src/FplLiveRank.Domain/FplLiveRank.Domain.csproj" />
+    <Project Path="src/FplLiveRank.Infrastructure/FplLiveRank.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FplLiveRank.UnitTests/FplLiveRank.UnitTests.csproj" />
+    <Project Path="tests/FplLiveRank.IntegrationTests/FplLiveRank.IntegrationTests.csproj" />
+  </Folder>
+</Solution>

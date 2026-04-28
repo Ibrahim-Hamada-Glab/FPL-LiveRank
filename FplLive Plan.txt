@@ -1,0 +1,935 @@
+Act as a senior full-stack software architect and senior .NET/Angular engineer.
+
+I want to build a professional “Live FPL Rank” web application similar in concept to live FPL rank tools, but using public/free Fantasy Premier League data and my own calculations. Do not copy any paid provider endpoint, private API, branding, UI, or proprietary algorithm. Build an original application based on public FPL endpoints and our own backend calculations.
+
+========================
+1. PRODUCT GOAL
+========================
+
+Build a full-stack web application that allows a user to enter:
+
+- FPL Manager ID
+- FPL League ID / Mini-league ID
+
+The system should show:
+
+- Live manager Gameweek points
+- Live season total
+- Live mini-league rank
+- Rank movement inside the mini-league
+- Player-by-player live points
+- Captain and vice-captain logic
+- Bench points
+- Projected auto-subs
+- Transfer hit deduction
+- Bonus/BPS display
+- Effective ownership inside the selected mini-league
+- “Why my rank changed” explanation
+
+Important:
+- Exact live mini-league rank is required.
+- Exact global overall rank is NOT required in MVP.
+- If global overall rank is implemented later, it must be clearly labeled as “Estimated Live Overall Rank”.
+
+========================
+2. TECH STACK
+========================
+
+Use:
+
+Backend:
+- .NET 10 Web API
+- Clean Architecture / layered architecture, but do not overuse DDD
+- Entity Framework Core
+- PostgreSQL
+- Redis cache
+- SignalR for live updates
+- Hangfire or Quartz for background polling jobs
+- HttpClientFactory for FPL API integration
+- Serilog for structured logging
+- FluentValidation
+- AutoMapper or manual mapping if cleaner
+
+Frontend:
+- Angular latest stable version
+- TypeScript
+- Standalone components preferred if suitable
+- Angular services for API calls
+- SignalR client for live updates
+- Clean, responsive, professional UI
+- Tailwind CSS or Angular Material may be used
+
+DevOps:
+- Docker support
+- docker-compose for API, PostgreSQL, Redis
+- Environment-based configuration
+- Swagger/OpenAPI
+- README with setup instructions
+
+========================
+3. EXTERNAL DATA SOURCE
+========================
+
+Use public Fantasy Premier League endpoints from the backend only.
+
+Do not call FPL endpoints directly from Angular.
+
+The backend should act as a proxy/cache/calculation engine.
+
+Required FPL endpoints:
+
+1. Bootstrap static data:
+GET /api/bootstrap-static/
+
+Purpose:
+- Players
+- Teams
+- Gameweeks/events
+- Element types
+- Total players
+- Current gameweek detection
+
+2. Gameweek live data:
+GET /api/event/{eventId}/live/
+
+Purpose:
+- Live player points
+- Minutes
+- Goals
+- Assists
+- Clean sheets
+- Saves
+- Bonus
+- BPS
+- Total points
+- Explain/breakdown if available
+
+3. Fixtures:
+GET /api/fixtures/?event={eventId}
+
+Purpose:
+- Match status
+- Finished/not finished
+- Needed for double gameweek and auto-sub projection
+
+4. Manager picks:
+GET /api/entry/{managerId}/event/{eventId}/picks/
+
+Purpose:
+- Manager squad
+- Starting XI
+- Bench order
+- Captain
+- Vice captain
+- Pick multipliers
+- Transfer cost
+- Active chip if available
+
+5. Manager history:
+GET /api/entry/{managerId}/history/
+
+Purpose:
+- Previous gameweek totals
+- Current history
+- Chips
+- Official rank history
+- Transfer costs if needed
+
+6. Classic league standings:
+GET /api/leagues-classic/{leagueId}/standings/
+
+Purpose:
+- Mini-league members
+- Official current standings
+- Manager IDs
+- Pagination support
+
+7. Event status:
+GET /api/event-status/
+
+Purpose:
+- Bonus status
+- League update status
+- Current event processing state
+
+Important:
+- Add retry policy and timeout handling.
+- Add cache to avoid excessive FPL API calls.
+- Add graceful degradation if FPL API is unavailable.
+- Add rate-limit conscious design.
+
+========================
+4. CORE BACKEND ARCHITECTURE
+========================
+
+Create the solution structure like this:
+
+src/
+  FplLiveRank.Api/
+    Controllers/
+    Hubs/
+    Middleware/
+    Program.cs
+
+  FplLiveRank.Application/
+    Interfaces/
+    Services/
+    DTOs/
+    Validators/
+    Calculators/
+    Jobs/
+
+  FplLiveRank.Domain/
+    Entities/
+    Enums/
+    ValueObjects/
+    Models/
+
+  FplLiveRank.Infrastructure/
+    Persistence/
+    External/Fpl/
+    Cache/
+    Repositories/
+    BackgroundJobs/
+    SignalR/
+
+tests/
+  FplLiveRank.UnitTests/
+  FplLiveRank.IntegrationTests/
+
+Use dependency injection correctly.
+
+Suggested services:
+
+- IFplApiClient
+- IFplBootstrapService
+- IFplEventLiveService
+- IManagerLiveScoreService
+- ILeagueLiveRankService
+- IAutoSubCalculator
+- ICaptaincyCalculator
+- IEffectiveOwnershipCalculator
+- IFixtureStatusService
+- ICacheService
+- ILiveUpdateBroadcaster
+- IFplPollingJob
+
+========================
+5. DATABASE MODEL
+========================
+
+Create suitable EF Core entities.
+
+Minimum entities:
+
+FplEvent
+- Id
+- Name
+- DeadlineTime
+- IsCurrent
+- IsNext
+- IsFinished
+- IsDataChecked
+- UpdatedAtUtc
+
+FplTeam
+- Id
+- Name
+- ShortName
+
+FplPlayer
+- Id
+- WebName
+- FirstName
+- SecondName
+- TeamId
+- ElementType
+- Status
+- NowCost
+- SelectedByPercent
+- UpdatedAtUtc
+
+FplManager
+- Id
+- PlayerName
+- TeamName
+- LastSyncedAtUtc
+
+FplLeague
+- Id
+- Name
+- LastSyncedAtUtc
+
+FplLeagueMember
+- Id
+- LeagueId
+- ManagerId
+- EntryName
+- PlayerName
+- OfficialRank
+- OfficialTotal
+- LastSyncedAtUtc
+
+ManagerGameweekPick
+- Id
+- ManagerId
+- EventId
+- ElementId
+- Position
+- Multiplier
+- IsCaptain
+- IsViceCaptain
+
+ManagerGameweekHistory
+- Id
+- ManagerId
+- EventId
+- Points
+- TotalPoints
+- Rank
+- OverallRank
+- Bank
+- Value
+- EventTransfers
+- EventTransfersCost
+
+LivePlayerPoint
+- Id
+- EventId
+- ElementId
+- TotalPoints
+- Minutes
+- GoalsScored
+- Assists
+- CleanSheets
+- GoalsConceded
+- OwnGoals
+- PenaltiesSaved
+- PenaltiesMissed
+- YellowCards
+- RedCards
+- Saves
+- Bonus
+- Bps
+- Influence
+- Creativity
+- Threat
+- IctIndex
+- UpdatedAtUtc
+
+LiveManagerScore
+- Id
+- ManagerId
+- EventId
+- RawLivePoints
+- TransferCost
+- LivePointsAfterHits
+- PreviousTotal
+- LiveSeasonTotal
+- ProjectedAutoSubsJson
+- ActiveChip
+- CalculatedAtUtc
+
+LiveLeagueStanding
+- Id
+- LeagueId
+- EventId
+- ManagerId
+- OfficialRank
+- LiveRank
+- RankChange
+- OfficialTotal
+- LiveTotal
+- LiveGwPoints
+- CalculatedAtUtc
+
+Add indexes:
+- ManagerId + EventId
+- LeagueId + EventId
+- ElementId + EventId
+- EventId
+- LeagueId + ManagerId
+
+========================
+6. LIVE POINTS CALCULATION
+========================
+
+Do not calculate raw football points manually in MVP.
+
+Use FPL live endpoint player `total_points`.
+
+Algorithm:
+
+For each manager:
+1. Get manager picks for the event.
+2. Get live player points for the event.
+3. Apply multiplier for each pick.
+4. Deduct transfer cost.
+5. Add to previous official total.
+
+Formula:
+
+LiveGwPointsBeforeHits =
+SUM(playerLiveTotalPoints * pickMultiplier)
+
+LiveGwPointsAfterHits =
+LiveGwPointsBeforeHits - TransferCost
+
+LiveSeasonTotal =
+PreviousTotalBeforeCurrentGameweek + LiveGwPointsAfterHits
+
+Important:
+- Use official pick multiplier when reliable.
+- If official FPL has not yet processed captain/auto-sub logic, use our projection calculators.
+- Store both raw and projected values where helpful.
+
+========================
+7. CAPTAIN / VICE-CAPTAIN LOGIC
+========================
+
+Implement captaincy projection.
+
+Rules:
+- If captain plays any minutes in the Gameweek, captain gets double points.
+- If captain plays 0 minutes after all his possible fixtures are finished, vice-captain gets double points.
+- If neither captain nor vice-captain plays, no player receives double points.
+- For Triple Captain, multiplier is 3 instead of 2.
+- If captain does not play and Triple Captain chip is active, apply triple multiplier to vice-captain if FPL rules/data support that behavior.
+
+Important:
+- Be careful in double gameweeks.
+- A player with 0 minutes is not considered final until all fixtures for his team in the Gameweek are finished.
+- During live matches, mark captaincy as “projected” if not final.
+
+========================
+8. AUTO-SUB CALCULATION
+========================
+
+Implement auto-sub projection.
+
+Formation constraints:
+- Exactly 1 goalkeeper
+- At least 3 defenders
+- At least 2 midfielders
+- At least 1 forward
+- Total starters = 11
+
+Pick position assumptions:
+- Positions 1-11 are starting XI
+- Position 12 is bench goalkeeper
+- Positions 13-15 are outfield bench players in priority order
+
+Algorithm:
+1. Start with positions 1-11.
+2. Identify starters with 0 minutes and no remaining fixture in the gameweek.
+3. For goalkeeper:
+   - Replace only with bench goalkeeper if bench goalkeeper played.
+4. For outfield player:
+   - Try bench outfield players in bench order.
+   - Bench player must have played.
+   - Replacement must not break formation constraints.
+5. Apply each bench player only once.
+6. Return:
+   - Final projected XI
+   - Substitutions made
+   - Players not subbed due to invalid formation
+   - Whether projection is final or still pending
+
+Edge cases:
+- Double gameweeks
+- Players with postponed matches
+- Bench Boost active
+- Captain not playing and being auto-subbed
+- Vice-captain not playing
+- Formation validity after multiple missing starters
+
+========================
+9. BENCH BOOST / TRIPLE CAPTAIN / CHIPS
+========================
+
+Implement chip handling.
+
+Bench Boost:
+- All 15 players count.
+- Bench players use multiplier 1 unless FPL API gives another valid multiplier.
+
+Triple Captain:
+- Captain multiplier becomes 3.
+- If captain does not play, handle vice-captain according to FPL behavior.
+
+Free Hit:
+- No scoring difference.
+- Use current event picks normally.
+
+Wildcard:
+- No scoring difference.
+- Usually transfer cost should be 0 if wildcard active.
+
+Important:
+- Prefer data from manager picks/history if active chip is explicitly provided.
+- Store active chip in LiveManagerScore.
+
+========================
+10. LIVE MINI-LEAGUE RANK
+========================
+
+Implement exact mini-league live rank.
+
+Flow:
+1. User enters league ID.
+2. Backend fetches league standings with pagination.
+3. Store league members.
+4. For each manager:
+   - Fetch picks.
+   - Fetch history.
+   - Calculate live GW points.
+   - Calculate live season total.
+5. Sort by live season total descending.
+6. Assign live rank.
+7. Calculate rank movement:
+
+RankChange = OfficialRank - LiveRank
+
+Positive means manager moved up.
+Negative means manager dropped.
+
+Response should include:
+- Manager ID
+- Entry/team name
+- Player name
+- Official rank
+- Live rank
+- Rank change
+- Official total
+- Live total
+- Live GW points
+- Transfer cost
+- Active chip
+- Captain
+- Auto-sub summary
+
+Tie handling:
+- If equal live totals, use official rank as secondary sort.
+- Also expose tie flag if needed.
+
+========================
+11. EFFECTIVE OWNERSHIP
+========================
+
+Implement effective ownership inside selected mini-league.
+
+Formula:
+
+EffectiveOwnership(player) =
+SUM(player multiplier across managers) / manager count * 100
+
+Example:
+- Owned normally by 60 managers = 60
+- Captained by 20 managers = 40
+- Triple captained by 5 managers = 15
+- Total managers = 100
+- EO = 115%
+
+For each relevant player, calculate:
+- Ownership %
+- Captaincy %
+- Effective ownership %
+- User multiplier
+- Rank impact per point
+
+RankImpactPerPoint =
+UserMultiplier - EffectiveOwnership / 100
+
+Show explanations:
+- If user owns/captains a high EO player, points may protect rank.
+- If user does not own a high EO player, that player scoring hurts rank.
+- If user owns a low EO differential, points may improve rank.
+
+========================
+12. API ENDPOINTS TO BUILD
+========================
+
+Create REST endpoints:
+
+GET /api/fpl/events/current
+- Returns current event/gameweek.
+
+GET /api/fpl/bootstrap/sync
+- Admin/dev endpoint to sync bootstrap data.
+
+GET /api/fpl/manager/{managerId}/live
+Query:
+- eventId optional
+
+Returns:
+- Manager live score
+- Starting XI
+- Bench
+- Captain/vice
+- Auto-sub projection
+- Player breakdown
+
+GET /api/fpl/league/{leagueId}/live
+Query:
+- eventId optional
+- forceRefresh optional
+
+Returns:
+- Live mini-league table
+- Last calculated timestamp
+- Processing status
+
+GET /api/fpl/league/{leagueId}/effective-ownership
+Query:
+- eventId optional
+
+Returns:
+- Effective ownership table for league.
+
+GET /api/fpl/player/{elementId}/live
+Query:
+- eventId optional
+
+Returns:
+- Live player stats, points, BPS, fixtures.
+
+POST /api/fpl/league/{leagueId}/refresh
+- Starts background refresh job.
+
+GET /api/fpl/jobs/{jobId}/status
+- Returns job progress.
+
+========================
+13. SIGNALR
+========================
+
+Create SignalR hub:
+
+/hubs/fpl-live
+
+Groups:
+- manager-{managerId}
+- league-{leagueId}
+- event-{eventId}
+
+Events sent to client:
+- ManagerLiveScoreUpdated
+- LeagueLiveTableUpdated
+- PlayerLivePointsUpdated
+- RefreshProgressUpdated
+- RefreshFailed
+
+When background jobs recalculate a league, push updates to connected clients.
+
+========================
+14. BACKGROUND JOBS
+========================
+
+Create polling jobs.
+
+Suggested intervals:
+- bootstrap-static: every 30-60 minutes
+- fixtures: every 30-60 seconds during active matches
+- event live: every 30-60 seconds during active matches
+- event-status: every 30-60 seconds during active matches
+- manager picks: cache after deadline
+- league standings: cache and refresh on demand
+
+Important:
+- Do not hammer FPL API.
+- Cache aggressively.
+- Use distributed locking to prevent duplicate refreshes for same league.
+- Support manual refresh button from UI.
+- Show refresh state in frontend.
+
+========================
+15. CACHING STRATEGY
+========================
+
+Use Redis.
+
+Cache keys:
+
+fpl:bootstrap
+fpl:event:{eventId}:live
+fpl:event:{eventId}:fixtures
+fpl:event:status
+fpl:manager:{managerId}:event:{eventId}:picks
+fpl:manager:{managerId}:history
+fpl:league:{leagueId}:standings:page:{page}
+fpl:league:{leagueId}:live:{eventId}
+
+TTL:
+- bootstrap: 30-60 min
+- live event data: 30-60 sec during matches
+- fixtures: 30-60 sec during matches
+- manager picks: long TTL after deadline
+- manager history: 5-15 min
+- league live table: 30-60 sec
+
+========================
+16. FRONTEND REQUIREMENTS
+========================
+
+Build a professional Angular UI.
+
+Pages:
+
+1. Home / Dashboard
+- Enter Manager ID
+- Enter League ID
+- Current Gameweek card
+- Quick actions
+
+2. Manager Live View
+- Manager name/team
+- Live GW points
+- Transfer hits
+- Live season total
+- Captain/vice
+- Active chip
+- Pitch-style player display
+- Bench
+- Auto-sub projection
+- Player breakdown table
+
+3. League Live Table
+- Live rank
+- Official rank
+- Rank movement
+- Team name
+- Manager name
+- Live GW points
+- Live total
+- Captain
+- Active chip
+- Search/filter
+- Sort
+
+4. Effective Ownership
+- Player
+- Team
+- Position
+- Ownership %
+- Captaincy %
+- EO %
+- User multiplier
+- Rank impact per point
+
+5. Player Live Details
+- Points breakdown
+- BPS
+- Bonus
+- Minutes
+- Goals/assists/clean sheet/cards/etc.
+
+UI style:
+- Clean professional dashboard
+- Dark/light mode if easy
+- Responsive for desktop and mobile
+- Loading skeletons
+- Empty states
+- Error states
+- Last updated timestamp
+- Refresh button
+- Live update indicator
+
+========================
+17. ERROR HANDLING
+========================
+
+Handle:
+- Invalid manager ID
+- Invalid league ID
+- FPL API unavailable
+- Timeout
+- Rate limit / too many requests
+- Missing picks
+- Private/inaccessible league if applicable
+- Event not started
+- Event finished
+- No current gameweek
+- Background job failure
+
+Return consistent API error format:
+
+{
+  "code": "FPL_API_UNAVAILABLE",
+  "message": "Unable to fetch data from Fantasy Premier League right now.",
+  "details": "...",
+  "traceId": "..."
+}
+
+========================
+18. TESTING REQUIREMENTS
+========================
+
+Create unit tests for:
+
+- Live points calculator
+- Captain/vice calculator
+- Triple captain logic
+- Bench Boost logic
+- Auto-sub calculator
+- Formation validity
+- Double gameweek pending player logic
+- Mini-league ranking
+- Effective ownership calculation
+- Transfer hit deduction
+
+Create integration tests for:
+- FPL API client using mocked HTTP responses
+- League live rank calculation
+- Manager live score endpoint
+- Redis cache behavior if practical
+
+Use sample JSON fixtures for FPL responses.
+
+========================
+19. IMPORTANT EDGE CASES
+========================
+
+Handle these carefully:
+
+1. Captain has 0 minutes but still has another fixture in double gameweek.
+Result:
+- Do not finalize vice-captain yet.
+- Mark as pending.
+
+2. Starter defender did not play and starting formation has only 3 defenders.
+Result:
+- Cannot replace him with midfielder/forward if that leaves only 2 defenders.
+- Must find eligible defender from bench.
+
+3. Bench Boost active.
+Result:
+- Do not auto-sub normally for points calculation because all 15 count.
+- Still show normal bench information.
+
+4. Transfer hit.
+Result:
+- Deduct event transfer cost from live GW score.
+
+5. League with many managers.
+Result:
+- Use pagination, batching, cache, and background job progress.
+- Do not block HTTP request for too long.
+
+6. Event not started.
+Result:
+- Live points should be 0 or official current state.
+- Show “Gameweek not started”.
+
+7. Event finished.
+Result:
+- Live data should become final.
+- Auto-sub/captaincy projections become final if FPL data confirms.
+
+========================
+20. SECURITY / LEGAL / ETHICS
+========================
+
+Do:
+- Use public FPL data responsibly.
+- Cache responses.
+- Avoid aggressive scraping.
+- Implement rate limiting on our own API.
+- Do not expose internal backend errors.
+- Do not copy paid product branding, endpoints, response shapes, or proprietary logic.
+- Label estimated calculations clearly.
+- Use paid/private APIs without authorization.
+- Reverse engineer paid services.
+- Store user passwords for FPL.
+
+
+========================
+21. DELIVERABLES
+========================
+
+Generate:
+
+1. Full backend .NET 10 solution
+2. Full Angular frontend
+3. PostgreSQL EF Core migrations
+4. Redis integration
+5. SignalR integration
+6. Background jobs
+7. Dockerfile for backend
+8. Dockerfile for frontend if needed
+9. docker-compose.yml for API + PostgreSQL + Redis
+10. Swagger/OpenAPI setup
+11. README.md with:
+   - Setup
+   - Environment variables
+   - How to run backend
+   - How to run frontend
+   - How to run migrations
+   - How calculations work
+   - Known limitations
+12. Unit tests
+13. Example seed/test data or mocked JSON fixtures
+
+========================
+22. IMPLEMENTATION ORDER
+========================
+
+Build in this order:
+
+Phase 1:
+- Solution structure
+- FPL API client
+- Bootstrap sync
+- Current event detection
+- Manager live score endpoint
+
+Phase 2:
+- Live points calculation
+- Captain/vice logic
+- Transfer hit deduction
+- Angular manager live page
+
+Phase 3:
+- Auto-sub calculator
+- Bench Boost / Triple Captain handling
+- Player breakdown UI
+
+Phase 4:
+- League standings import
+- Exact live mini-league rank
+- Angular league table
+
+Phase 5:
+- SignalR live updates
+- Background refresh jobs
+- Redis caching
+
+Phase 6:
+- Effective ownership
+- Rank impact explanations
+
+Phase 7:
+- Tests, Docker, README, polish
+
+========================
+23. OUTPUT EXPECTATION
+========================
+
+Before writing code:
+1. Produce a short architecture summary.
+2. Produce the final project structure.
+3. Produce the main calculation flow.
+4. Then start implementing files.
+
+When implementing:
+- Write clean, production-style code.
+- Avoid fake placeholders unless absolutely necessary.
+- Add comments only where logic is complex.
+- Make calculators pure and unit-testable.
+- Keep controllers thin.
+- Keep business logic in Application services.
+- Keep external FPL calls in Infrastructure.
+- Use DTOs for API responses.
+- Use async/await properly.
+- Use cancellation tokens.
+
+Final result should be a professional MVP that I can run locally with Docker and later deploy.
