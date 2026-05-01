@@ -93,6 +93,21 @@ public sealed class ApiSmokeTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task League_effective_ownership_endpoint_returns_eo_table()
+    {
+        var response = await _client.GetAsync("/api/fpl/league/99/effective-ownership?eventId=7&managerId=123");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = await response.Content.ReadFromJsonAsync<LeagueEffectiveOwnershipDto>();
+        dto.Should().NotBeNull();
+        dto!.LeagueId.Should().Be(99);
+        dto.EventId.Should().Be(7);
+        dto.SelectedManagerId.Should().Be(123);
+        dto.Players.Should().ContainSingle()
+            .Which.WebName.Should().Be("Captain");
+    }
+
+    [Fact]
     public async Task League_refresh_endpoint_invokes_refresh_and_returns_dto()
     {
         var before = _leagues.RefreshCalls;

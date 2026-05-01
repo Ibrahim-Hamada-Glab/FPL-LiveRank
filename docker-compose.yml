@@ -39,8 +39,24 @@ services:
       ConnectionStrings__Postgres: "Host=postgres;Port=5432;Database=fpllive;Username=fpllive;Password=fpllive"
       Redis__ConnectionString: "redis:6379"
       Redis__Enabled: "true"
+      Cors__AllowedOrigins__0: "http://localhost:8081"
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
 
 volumes:
   postgres_data:

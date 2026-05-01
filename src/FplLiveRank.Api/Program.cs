@@ -46,6 +46,7 @@ try
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddOpenApi();
+    builder.Services.AddSwaggerGen();
 
     builder.Services.AddCors(opts =>
         opts.AddDefaultPolicy(p => p
@@ -64,6 +65,13 @@ try
     if (app.Environment.IsDevelopment())
     {
         app.MapOpenApi();
+        app.UseSwagger();
+        app.UseSwaggerUI(options =>
+        {
+            options.SwaggerEndpoint("/swagger/v1/swagger.json", "FPL Live Rank v1");
+            options.DocumentTitle = "FPL Live Rank API";
+            options.RoutePrefix = "swagger";
+        });
     }
 
     app.MapControllers();
