@@ -11,10 +11,10 @@
 | 3 | Auto-sub projector (formation-aware, single-use bench), Bench Boost short-circuit, Auto-subs UI panel | ✅ |
 | 4 | League standings import, exact live mini-league rank, Angular league table | ✅ |
 | 5 | SignalR push, Hangfire jobs, Redis snapshot caching | ✅ |
-| 6 | Effective ownership, "why my rank changed" explanations | ⏳ next |
-| 7 | Test/Docker/README polish | — |
+| 6 | Effective ownership, "why my rank changed" explanations | ✅ |
+| 7 | Test/Docker/README polish (EF migrations, Dockerfiles, Swagger, hardening) | ⏳ next |
 
-Tests: **63 unit + 8 integration, all passing** (last run 2026-05-01). Angular production build also passes.
+Tests: **66 unit + 8 integration, all passing** (last run 2026-05-02). Angular production build also passes.
 
 ## Architecture invariants (non-obvious)
 
@@ -108,12 +108,39 @@ Plan section 6 covers FPL league endpoint:
 4. **Hangfire** wired in Api with memory storage. One recurring job: `EventLiveRefreshJob` (every minute) re-warms event-status/event-live/fixtures and broadcasts `EventLiveRefreshed`.
 5. **Manual refresh endpoint** `POST /api/fpl/league/{leagueId}/refresh?eventId={n}` — invokes `LeagueLiveRankService.RefreshAsync`, which takes the per-league refresh lock, recomputes, broadcasts the new table, and returns the fresh DTO. If the lock is already held the endpoint returns the existing snapshot without recomputing (and broadcasts a `skipped` progress event).
 
-## Phase 6 — concrete starting points
+## Phase 6 — implemented
 
-1. Add `IEffectiveOwnershipCalculator` (pure) under `Application/Calculators/` — input is the league's manager picks + live stats, output is per-player Ownership / Captaincy / EO / RankImpactPerPoint.
-2. Add `GET /api/fpl/league/{leagueId}/effective-ownership` endpoint and a corresponding service that reuses `LeagueLiveRankService`'s standings fetch + per-manager picks (don't refetch — those are already cached).
-3. "Why my rank changed" — derive a delta between this snapshot's rank and the prior one. Easiest store: keep the prior `LeagueLiveRankDto` in Redis under `league:{id}:event:{e}:live:prev` whenever `RefreshAsync` writes a new snapshot, then compute deltas at read time.
-4. Frontend: new Angular page `/league/:id/eo` with a sortable EO table; reuse the search component from `league-live.component`.
+1. **Pure EO calculator** `EffectiveOwnershipCalculator` (`Application/Calculators/`) — emits per-player Ownership / Captaincy / EO / RankImpactPerPoint, with a friendly impact explanation string.
+2. **`ILeagueEffectiveOwnershipService` + `LeagueEffectiveOwnershipService`** — reuses `ILeagueLiveRankService.GetAsync` (so standings + per-manager picks are served from existing snapshot caches) and persists its own `league:{id}:event:{e}:eo` snapshot for ~30s. Bounded concurrency (`MaxConcurrentManagerLoads = 8`); per-manager fetch failures are logged + skipped, not fatal.
+3. **`GET /api/fpl/league/{leagueId}/effective-ownership`** on `LeagueController`, with optional `eventId` and `managerId` (for user-specific multipliers).
+4. **Rank-change explanations** — `LeagueLiveRankService.RefreshAsync` writes the prior snapshot to `league:{id}:event:{e}:live:prev` (TTL 6h). On every compute, `LeagueLiveRankEntryDto` exposes `PreviousLiveRank`, `RankDeltaSincePreviousSnapshot`, and a human-readable `RankChangeExplanation`. League UI surfaces the delta inline under the Move column.
+5. **Angular `/league/:id/eo` page** (`pages/league-effective-ownership/`) — sortable EO table, search, optional Manager ID for personalised rank impact, and a back link to the live league table. League-live page now links here.
+
+## Phase 7 — concrete starting points
+
+Plan §21 deliverables that are still missing or rough:
+
+1. **EF Core migrations.** `AppDbContext` is wired but never `EnsureCreated`'d. Add an `InitialCreate` migration and decide whether snapshot persistence (LiveManagerScore / LiveLeagueStanding entities from plan §5) is in scope or stays cache-only. If kept cache-only, document it explicitly and slim the entity set.
+2. **Docker.** Add `src/FplLiveRank.Api/Dockerfile` (multi-stage build), `client/Dockerfile` (Nginx serving the Angular dist with `/api` reverse-proxied to the API), and a root `docker-compose.yml` covering Postgres + Redis + API + Web.
+3. **Swagger UI.** `AddOpenApi()` is registered but not exposed via Swashbuckle UI — add `Swashbuckle.AspNetCore` and map `/swagger` in Development. Plan §12 lists every endpoint to verify.
+4. **README polish.** Current README is short — expand to cover env vars, run commands (backend / frontend / docker compose), how calculations work (link to calculator files), known limitations, and a screenshot section.
+5. **Hardening pass** (small but visible quality wins):
+   - Honor `Retry-After` on FPL 429 in the Polly policy in `FplApiClient`.
+   - Frontend `ErrorHandler` to avoid white-screening on render errors.
+   - Swap `Hangfire.MemoryStorage` for `Hangfire.PostgreSql` if you want multi-instance resilience (still optional for MVP).
+   - Surface `PlayerName` / `TeamName` on `ManagerLiveDto` (currently empty) by joining manager-entry data — but only if Phase 7 audit deems the extra FPL hit acceptable.
+6. **Tests.** Add an integration smoke for the EO endpoint and a Playwright (or basic Karma) check that league live + EO pages render against the API factory. Tighten `dotnet test` reporting (TRX + code coverage collector) for the README section.
+
+### File map updates from Phase 6
+
+- `src/FplLiveRank.Application/Calculators/EffectiveOwnershipCalculator.cs` — pure, dictionary in / list out, OrderByDescending(EO).
+- `src/FplLiveRank.Application/Services/LeagueEffectiveOwnershipService.cs` — orchestrator, uses `ILeagueLiveRankService` + `IManagerLiveScoreService` (snapshot-cached).
+- `src/FplLiveRank.Application/DTOs/LeagueEffectiveOwnershipDto.cs` — DTO surfaced by API + Angular.
+- `src/FplLiveRank.Api/Controllers/LeagueController.cs` — new `GetEffectiveOwnership` action (route `effective-ownership`).
+- `src/FplLiveRank.Application/Services/CacheKeys.cs` — `LeagueLivePreviousSnapshot`, `LeagueEffectiveOwnershipSnapshot`, plus matching TTLs in `CacheTtl`.
+- `client/src/app/pages/league-effective-ownership/` — new lazy route at `/league/:id/eo`.
+- `client/src/app/api/league-live.types.ts` — `LeagueEffectiveOwnership(Entry)?` and rank-delta fields on `LeagueLiveRankEntry`.
+- Tests: `Calculators/EffectiveOwnershipCalculatorTests.cs`, `Services/LeagueEffectiveOwnershipServiceTests.cs`, plus `SnapshotCachingTests.LeagueLiveRank_RefreshAsync_preserves_prior_snapshot_for_rank_delta_explanations`.
 
 ## How to run + verify
 
@@ -121,7 +148,7 @@ Plan section 6 covers FPL league endpoint:
 # backend
 dotnet restore FplLiveRank.slnx
 dotnet build FplLiveRank.slnx
-dotnet test FplLiveRank.slnx              # 53 unit + 7 integration
+dotnet test FplLiveRank.slnx              # 66 unit + 8 integration
 
 # frontend
 cd client
