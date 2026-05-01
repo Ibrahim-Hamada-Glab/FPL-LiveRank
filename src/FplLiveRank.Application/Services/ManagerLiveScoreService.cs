@@ -34,6 +34,19 @@ public sealed class ManagerLiveScoreService : IManagerLiveScoreService
 
         var resolvedEventId = eventId ?? (await _bootstrap.GetCurrentEventAsync(ct).ConfigureAwait(false)).Id;
 
+        return await SnapshotCache.GetOrComputeAsync(
+            _cache,
+            CacheKeys.ManagerLiveSnapshot(managerId, resolvedEventId),
+            CacheKeys.ManagerRefreshLock(managerId, resolvedEventId),
+            CacheTtl.ManagerLiveSnapshot,
+            CacheTtl.RefreshLock,
+            inner => ComputeAsync(managerId, resolvedEventId, inner),
+            _logger,
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task<ManagerLiveDto> ComputeAsync(int managerId, int resolvedEventId, CancellationToken ct)
+    {
         var picksTask = GetPicksAsync(managerId, resolvedEventId, ct);
         var liveTask = GetEventLiveAsync(resolvedEventId, ct);
         var fixturesTask = GetFixturesAsync(resolvedEventId, ct);

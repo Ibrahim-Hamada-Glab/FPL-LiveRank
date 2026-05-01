@@ -6,9 +6,9 @@ Live Fantasy Premier League scoring and mini-league rank calculations, built on 
 
 **Phase 4 complete.**
 
-Backend: manager live scoring now includes captaincy projection, formation-aware auto-subs, Bench Boost short-circuiting, and exact on-demand mini-league live rank. `LeagueLiveRankService` fetches paginated public FPL classic-league standings, calculates every member through the same manager live pipeline, then ranks by live season total with tie flags and rank movement.
+Backend: manager live scoring now includes captaincy projection, formation-aware auto-subs, Bench Boost short-circuiting, manager league discovery from the public entry endpoint, and exact on-demand mini-league live rank. `LeagueLiveRankService` fetches paginated public FPL classic-league standings, calculates every member through the same manager live pipeline, then ranks by live season total with tie flags and rank movement.
 
-Frontend: Angular 19 + Tailwind has a manager live page and a `/league/:id` mini-league table with search, sorting, rank movement, captain/chip columns, and links back to manager details.
+Frontend: Angular 19 + Tailwind has a manager live page with local manager-id persistence, discoverable mini-league selection, and a `/league/:id` mini-league table with search, sorting, rank movement, captain/chip columns, and links back to manager details.
 
 Not yet implemented: SignalR push / Hangfire jobs / Redis snapshot caching (Phase 5), effective ownership and rank-change explanations (Phase 6).
 
@@ -67,6 +67,7 @@ Production build: `npm run build` (output at `client/dist/client`).
 |-------:|---------------------------------------|-----------------------------------------------------------------------------|
 | GET    | `/api/fpl/events/current`             | Resolves current (or upcoming) gameweek from `bootstrap-static`.            |
 | POST   | `/api/fpl/bootstrap/sync`             | Forces a refresh of cached bootstrap data.                                  |
+| GET    | `/api/fpl/manager/{managerId}/leagues`| Returns the manager's public classic leagues for UI selection.              |
 | GET    | `/api/fpl/manager/{managerId}/live`   | Live GW points, season total, pick-by-pick breakdown. `?eventId=` optional. |
 | GET    | `/api/fpl/league/{leagueId}/live`     | Exact live mini-league rank table. `?eventId=` optional.                    |
 | GET    | `/health`                             | Liveness probe.                                                             |
@@ -120,6 +121,7 @@ Response (abbreviated):
 | `bootstrap`                      | 30 min |
 | `event:{id}:live`                | 45 s   |
 | `event:{id}:fixtures`            | 45 s   |
+| `manager:{id}:entry`             | 10 min |
 | `manager:{id}:event:{e}:picks`   | 2 min  |
 | `manager:{id}:history`           | 10 min |
 | `league:{id}:standings:page:{n}` | 2 min  |
@@ -132,10 +134,11 @@ Keys are prefixed with `Redis:KeyPrefix` (default `fpl:`).
 dotnet test
 ```
 
-Coverage so far (50 unit + 6 integration tests):
+Coverage so far (53 unit + 7 integration tests):
 
 - `LivePointsCalculator` — basic sum, captain ×2 / ×3, bench multiplier=0, transfer hit deduction, missing live stat → 0, negative cost guard.
 - `FplApiClient` — JSON parsing for bootstrap and event-live, 404/5xx mapping to `FplApiException`, `?event=` query param.
+- `ManagerLeaguesService` — manager entry mapping, classic league discovery, cache key, invalid manager errors.
 - `CaptaincyProjector` — captain-played no-op, blanked-captain + finished team promotes vice, blanked + unfinished team stays Projected, Triple Captain carries multiplier 3 through the swap, both blanked yields NoCaptainPoints, vice yet-to-play stays Projected.
 - `AutoSubProjector` — no-blanks no-op, outfield blank → first eligible bench (in priority order), GK only swaps with bench GK, blocked-by-formation paths, bench candidate already used not reused, unfinished-team blank flags projection pending.
 - `LeagueLiveRankService` — paginated standings, cache keys, bounded manager scoring path, live ranking, tie flags, rank movement, empty/invalid league errors.

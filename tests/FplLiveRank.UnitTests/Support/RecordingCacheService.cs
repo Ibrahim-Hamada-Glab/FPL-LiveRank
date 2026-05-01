@@ -35,4 +35,13 @@ internal sealed class RecordingCacheService : ICacheService
         RemovedKeys.Add(key);
         return Task.CompletedTask;
     }
+
+    public Task<IAsyncDisposable?> AcquireLockAsync(string key, TimeSpan ttl, CancellationToken ct = default)
+        => Task.FromResult<IAsyncDisposable?>(NoOpLock.Instance);
+
+    private sealed class NoOpLock : IAsyncDisposable
+    {
+        public static readonly NoOpLock Instance = new();
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }

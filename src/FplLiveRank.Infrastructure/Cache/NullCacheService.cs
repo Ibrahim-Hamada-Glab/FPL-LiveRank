@@ -14,4 +14,13 @@ public sealed class NullCacheService : ICacheService
         => factory(ct);
 
     public Task RemoveAsync(string key, CancellationToken ct = default) => Task.CompletedTask;
+
+    public Task<IAsyncDisposable?> AcquireLockAsync(string key, TimeSpan ttl, CancellationToken ct = default)
+        => Task.FromResult<IAsyncDisposable?>(NoOpLock.Instance);
+
+    private sealed class NoOpLock : IAsyncDisposable
+    {
+        public static readonly NoOpLock Instance = new();
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 }

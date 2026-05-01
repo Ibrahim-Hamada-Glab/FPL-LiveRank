@@ -1,6 +1,12 @@
+using FplLiveRank.Api.Hubs;
 using FplLiveRank.Api.Middleware;
 using FplLiveRank.Application;
+using FplLiveRank.Application.Interfaces;
+using FplLiveRank.Application.Jobs;
 using FplLiveRank.Infrastructure;
+using Hangfire;
+using Hangfire.MemoryStorage;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration()
@@ -22,6 +28,21 @@ try
         .AddApplication()
         .AddInfrastructure(builder.Configuration);
 
+    // Replace the Application-default null broadcaster with the SignalR-backed one.
+    builder.Services.RemoveAll<IFplLiveBroadcaster>();
+    builder.Services.AddSingleton<IFplLiveBroadcaster, SignalRFplLiveBroadcaster>();
+
+    builder.Services.AddSignalR();
+
+    // Hangfire memory storage is fine for a single-instance MVP. For multi-instance
+    // deployments swap to Hangfire.PostgreSql against the existing AppDbContext database.
+    builder.Services.AddHangfire(cfg => cfg
+        .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+        .UseSimpleAssemblyNameTypeSerializer()
+        .UseRecommendedSerializerSettings()
+        .UseMemoryStorage());
+    builder.Services.AddHangfireServer();
+
     builder.Services.AddControllers();
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddOpenApi();
@@ -31,7 +52,8 @@ try
             .WithOrigins(builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
                          ["http://localhost:4200"])
             .AllowAnyHeader()
-            .AllowAnyMethod()));
+            .AllowAnyMethod()
+            .AllowCredentials()));
 
     var app = builder.Build();
 
@@ -45,7 +67,17 @@ try
     }
 
     app.MapControllers();
+    app.MapHub<FplLiveHub>(FplLiveHub.Path);
     app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+    // Schedule the event-live refresh recurring job. The cron expression below is
+    // every 60 seconds — adequate for live match days; it's also harmless out of season
+    // since the job swallows exceptions.
+    var recurring = app.Services.GetRequiredService<IRecurringJobManager>();
+    recurring.AddOrUpdate<EventLiveRefreshJob>(
+        EventLiveRefreshJob.RecurringJobId,
+        job => job.RunAsync(),
+        Cron.Minutely);
 
     app.Run();
 }
@@ -57,5 +89,3 @@ finally
 {
     Log.CloseAndFlush();
 }
-
- 

@@ -5,6 +5,7 @@ using FplLiveRank.Application.External.Fpl.Models;
 using FplLiveRank.Application.Interfaces;
 using FplLiveRank.Application.Services;
 using FplLiveRank.Domain.Enums;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace FplLiveRank.UnitTests.Services;
@@ -57,7 +58,8 @@ public sealed class LeagueLiveRankServiceTests
             .ReturnsAsync(CreateScore(3, liveSeasonTotal: 1070, liveGwPoints: 85, transferCost: 0, captainName: "Captain C"));
 
         var cache = new RecordingCacheService();
-        var service = new LeagueLiveRankService(fpl.Object, bootstrap.Object, managerScores.Object, cache);
+        var service = new LeagueLiveRankService(fpl.Object, bootstrap.Object, managerScores.Object, cache,
+            new NullFplLiveBroadcaster(), NullLogger<LeagueLiveRankService>.Instance);
 
         var result = await service.GetAsync(99, eventId: null);
 
@@ -88,7 +90,9 @@ public sealed class LeagueLiveRankServiceTests
             Mock.Of<IFplApiClient>(),
             Mock.Of<IFplBootstrapService>(),
             Mock.Of<IManagerLiveScoreService>(),
-            new RecordingCacheService());
+            new RecordingCacheService(),
+            new NullFplLiveBroadcaster(),
+            NullLogger<LeagueLiveRankService>.Instance);
 
         var act = async () => await service.GetAsync(0, eventId: 7);
 
@@ -110,7 +114,9 @@ public sealed class LeagueLiveRankServiceTests
             fpl.Object,
             Mock.Of<IFplBootstrapService>(),
             Mock.Of<IManagerLiveScoreService>(),
-            new RecordingCacheService());
+            new RecordingCacheService(),
+            new NullFplLiveBroadcaster(),
+            NullLogger<LeagueLiveRankService>.Instance);
 
         var act = async () => await service.GetAsync(99, eventId: 7);
 

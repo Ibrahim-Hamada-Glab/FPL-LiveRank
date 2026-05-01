@@ -17,6 +17,9 @@ export interface LeagueLiveRankEntry {
   autoSubs: Substitution[];
   autoSubProjectionFinal: boolean;
   isTiedOnLiveTotal: boolean;
+  previousLiveRank: number | null;
+  rankDeltaSincePreviousSnapshot: number;
+  rankChangeExplanation: string | null;
 }
 
 export interface LeagueLiveRank {
@@ -25,5 +28,28 @@ export interface LeagueLiveRank {
   eventId: number;
   managerCount: number;
   standings: LeagueLiveRankEntry[];
+  calculatedAtUtc: string;
+}
+
+export interface LeagueEffectiveOwnershipEntry {
+  elementId: number;
+  webName: string;
+  teamId: number;
+  elementType: number;
+  ownershipPercent: number;
+  captaincyPercent: number;
+  effectiveOwnershipPercent: number;
+  userMultiplier: number;
+  rankImpactPerPoint: number;
+  impactExplanation: string;
+}
+
+export interface LeagueEffectiveOwnership {
+  leagueId: number;
+  leagueName: string;
+  eventId: number;
+  managerCount: number;
+  selectedManagerId: number | null;
+  players: LeagueEffectiveOwnershipEntry[];
   calculatedAtUtc: string;
 }

@@ -26,4 +26,7 @@ public sealed record LeagueLiveRankEntryDto(
     string? CaptainName,
     IReadOnlyList<SubstitutionDto> AutoSubs,
     bool AutoSubProjectionFinal,
-    bool IsTiedOnLiveTotal);
+    bool IsTiedOnLiveTotal,
+    int? PreviousLiveRank = null,
+    int RankDeltaSincePreviousSnapshot = 0,
+    string? RankChangeExplanation = null);

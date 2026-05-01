@@ -22,11 +22,13 @@ public sealed class ApiSmokeTests : IClassFixture<ApiFactory>
 {
     private readonly HttpClient _client;
     private readonly FakeBootstrapService _bootstrap;
+    private readonly FakeLeagueLiveRankService _leagues;
 
     public ApiSmokeTests(ApiFactory factory)
     {
         _client = factory.Client;
         _bootstrap = factory.Bootstrap;
+        _leagues = factory.Leagues;
     }
 
     [Fact]
@@ -91,6 +93,20 @@ public sealed class ApiSmokeTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task League_refresh_endpoint_invokes_refresh_and_returns_dto()
+    {
+        var before = _leagues.RefreshCalls;
+
+        var response = await _client.PostAsync("/api/fpl/league/99/refresh?eventId=7", content: null);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = await response.Content.ReadFromJsonAsync<LeagueLiveRankDto>();
+        dto.Should().NotBeNull();
+        dto!.LeagueId.Should().Be(99);
+        _leagues.RefreshCalls.Should().Be(before + 1);
+    }
+
+    [Fact]
     public async Task Bootstrap_sync_endpoint_returns_no_content()
     {
         var response = await _client.PostAsync("/api/fpl/bootstrap/sync", content: null);
@@ -115,6 +131,7 @@ public sealed class ApiSmokeTests : IClassFixture<ApiFactory>
 public sealed class ApiFactory : IDisposable
 {
     public FakeBootstrapService Bootstrap { get; } = new();
+    public FakeLeagueLiveRankService Leagues { get; } = new();
     public HttpClient Client { get; }
     private readonly IHost _host;
 
@@ -132,7 +149,8 @@ public sealed class ApiFactory : IDisposable
                     services.AddSingleton<IFplBootstrapService>(Bootstrap);
                     services.AddSingleton<IManagerLeaguesService, FakeManagerLeaguesService>();
                     services.AddSingleton<IManagerLiveScoreService, FakeManagerLiveScoreService>();
-                    services.AddSingleton<ILeagueLiveRankService, FakeLeagueLiveRankService>();
+                    services.AddSingleton<ILeagueLiveRankService>(Leagues);
+                    services.AddSingleton<ILeagueEffectiveOwnershipService, FakeLeagueEffectiveOwnershipService>();
                 });
                 webBuilder.Configure(app =>
                 {
@@ -245,7 +263,18 @@ public sealed class FakeManagerLeaguesService : IManagerLeaguesService
 
 public sealed class FakeLeagueLiveRankService : ILeagueLiveRankService
 {
+    public int RefreshCalls { get; private set; }
+
     public Task<LeagueLiveRankDto> GetAsync(int leagueId, int? eventId, CancellationToken ct = default)
+        => Task.FromResult(BuildDto(leagueId, eventId));
+
+    public Task<LeagueLiveRankDto> RefreshAsync(int leagueId, int? eventId, CancellationToken ct = default)
+    {
+        RefreshCalls++;
+        return Task.FromResult(BuildDto(leagueId, eventId));
+    }
+
+    private static LeagueLiveRankDto BuildDto(int leagueId, int? eventId)
     {
         if (leagueId <= 0)
         {
@@ -253,7 +282,7 @@ public sealed class FakeLeagueLiveRankService : ILeagueLiveRankService
                 new Dictionary<string, string[]> { ["leagueId"] = new[] { "League ID must be positive." } });
         }
 
-        return Task.FromResult(new LeagueLiveRankDto(
+        return new LeagueLiveRankDto(
             LeagueId: leagueId,
             LeagueName: "Test League",
             EventId: eventId ?? 7,
@@ -277,6 +306,50 @@ public sealed class FakeLeagueLiveRankService : ILeagueLiveRankService
                     AutoSubs: Array.Empty<SubstitutionDto>(),
                     AutoSubProjectionFinal: true,
                     IsTiedOnLiveTotal: false)
+            },
+            CalculatedAtUtc: DateTimeOffset.UtcNow);
+    }
+}
+
+public sealed class FakeLeagueEffectiveOwnershipService : ILeagueEffectiveOwnershipService
+{
+    public Task<LeagueEffectiveOwnershipDto> GetAsync(
+        int leagueId,
+        int? eventId,
+        int? managerId,
+        CancellationToken ct = default)
+    {
+        if (leagueId <= 0)
+        {
+            throw new Application.Errors.ValidationException(
+                new Dictionary<string, string[]> { ["leagueId"] = new[] { "League ID must be positive." } });
+        }
+
+        if (managerId is <= 0)
+        {
+            throw new Application.Errors.ValidationException(
+                new Dictionary<string, string[]> { ["managerId"] = new[] { "Manager ID must be positive when provided." } });
+        }
+
+        return Task.FromResult(new LeagueEffectiveOwnershipDto(
+            LeagueId: leagueId,
+            LeagueName: "Test League",
+            EventId: eventId ?? 7,
+            ManagerCount: 1,
+            SelectedManagerId: managerId,
+            Players: new List<LeagueEffectiveOwnershipEntryDto>
+            {
+                new(
+                    ElementId: 10,
+                    WebName: "Captain",
+                    TeamId: 1,
+                    ElementType: (int)ElementType.Midfielder,
+                    OwnershipPercent: 100m,
+                    CaptaincyPercent: 100m,
+                    EffectiveOwnershipPercent: 200m,
+                    UserMultiplier: 2,
+                    RankImpactPerPoint: 0m,
+                    ImpactExplanation: "Neutral impact: your exposure matches league effective ownership.")
             },
             CalculatedAtUtc: DateTimeOffset.UtcNow));
     }

@@ -3,7 +3,7 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ManagerLiveService } from '../../api/manager-live.service';
-import { ApiError, CaptaincyStatus, ManagerLeague, ManagerLeagues, ManagerLive } from '../../api/manager-live.types';
+import { ApiError, CaptaincyStatus, ManagerLeague, ManagerLeagues, ManagerLive, ManagerLivePick } from '../../api/manager-live.types';
 
 type ViewState =
   | { kind: 'idle' }
@@ -61,6 +61,23 @@ export class ManagerLiveComponent {
     const s = this.state();
     return s.kind === 'success' ? s.data.picks.filter(p => p.position >= 12) : [];
   });
+  readonly pitchLines = computed(() => {
+    const starters = this.starters();
+    return [
+      starters.filter(p => p.elementType === 1),
+      starters.filter(p => p.elementType === 2),
+      starters.filter(p => p.elementType === 3),
+      starters.filter(p => p.elementType === 4),
+    ].filter(line => line.length > 0);
+  });
+  readonly topContributors = computed(() => {
+    const s = this.state();
+    if (s.kind !== 'success') return [];
+    return [...s.data.picks]
+      .filter(p => p.contributedPoints > 0)
+      .sort((a, b) => b.contributedPoints - a.contributedPoints || a.position - b.position)
+      .slice(0, 3);
+  });
   readonly subbedOutIds = computed(() => {
     const s = this.state();
     return s.kind === 'success' ? new Set(s.data.autoSubs.map(x => x.outElementId)) : new Set<number>();
@@ -72,6 +89,10 @@ export class ManagerLiveComponent {
   readonly blockedIds = computed(() => {
     const s = this.state();
     return s.kind === 'success' ? new Set(s.data.blockedStarterElementIds) : new Set<number>();
+  });
+  readonly calculatedAt = computed(() => {
+    const s = this.state();
+    return s.kind === 'success' ? s.data.calculatedAtUtc : null;
   });
 
   constructor() {
@@ -100,6 +121,23 @@ export class ManagerLiveComponent {
     const s = this.state();
     if (s.kind !== 'success') return `#${id}`;
     return s.data.picks.find(p => p.elementId === id)?.webName ?? `#${id}`;
+  }
+
+  managerTitle(data: ManagerLive): string {
+    return data.teamName || data.playerName || `Manager #${data.managerId}`;
+  }
+
+  managerSubtitle(data: ManagerLive): string {
+    if (data.teamName && data.playerName) return data.playerName;
+    return `Gameweek ${data.eventId}`;
+  }
+
+  pickTone(pick: ManagerLivePick): string {
+    if (this.subbedOutIds().has(pick.elementId) || this.blockedIds().has(pick.elementId)) return 'opacity-60';
+    if (pick.isCaptain) return 'ring-2 ring-accent/70 bg-slate-950/95';
+    if (pick.isViceCaptain) return 'ring-1 ring-sky-300/60 bg-slate-950/85';
+    if (this.subbedInIds().has(pick.elementId)) return 'ring-1 ring-emerald-300/60 bg-emerald-950/70';
+    return 'ring-1 ring-white/15 bg-slate-950/80';
   }
 
   fetch(): void {

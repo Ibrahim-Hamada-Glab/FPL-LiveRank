@@ -59,8 +59,7 @@ public static class DependencyInjection
             http.DefaultRequestHeaders.UserAgent.ParseAdd(fplOptions.UserAgent);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         })
-        .AddPolicyHandler(BuildRetryPolicy(fplOptions.RetryCount))
-        .AddPolicyHandler(BuildTimeoutPolicy(fplOptions.TimeoutSeconds));
+        .AddPolicyHandler(BuildRetryPolicy(fplOptions.RetryCount));
     }
 
     private static IAsyncPolicy<HttpResponseMessage> BuildRetryPolicy(int retryCount) =>
@@ -71,6 +70,4 @@ public static class DependencyInjection
                 retryCount,
                 attempt => TimeSpan.FromMilliseconds(Math.Pow(2, attempt) * 200));
 
-    private static IAsyncPolicy<HttpResponseMessage> BuildTimeoutPolicy(int seconds) =>
-        Policy.TimeoutAsync<HttpResponseMessage>(TimeSpan.FromSeconds(seconds));
 }
