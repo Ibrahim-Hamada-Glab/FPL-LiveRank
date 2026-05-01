@@ -5,8 +5,6 @@ using FplLiveRank.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Polly;
-using Polly.Extensions.Http;
 using StackExchange.Redis;
 
 namespace FplLiveRank.Infrastructure;
@@ -59,15 +57,6 @@ public static class DependencyInjection
             http.DefaultRequestHeaders.UserAgent.ParseAdd(fplOptions.UserAgent);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         })
-        .AddPolicyHandler(BuildRetryPolicy(fplOptions.RetryCount));
+        .AddPolicyHandler(FplRetryPolicies.Build(fplOptions.RetryCount));
     }
-
-    private static IAsyncPolicy<HttpResponseMessage> BuildRetryPolicy(int retryCount) =>
-        HttpPolicyExtensions
-            .HandleTransientHttpError()
-            .OrResult(r => (int)r.StatusCode == 429)
-            .WaitAndRetryAsync(
-                retryCount,
-                attempt => TimeSpan.FromMilliseconds(Math.Pow(2, attempt) * 200));
-
 }
