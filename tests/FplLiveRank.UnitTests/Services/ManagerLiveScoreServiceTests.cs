@@ -112,6 +112,43 @@ public sealed class ManagerLiveScoreServiceTests
         });
     }
 
+    [Fact]
+    public async Task GetAsync_returns_cached_snapshot_without_calling_fpl()
+    {
+        var expected = new ManagerLiveDto(
+            ManagerId: 123,
+            EventId: 5,
+            PlayerName: "Cached Player",
+            TeamName: "Cached Team",
+            RawLivePoints: 30,
+            TransferCost: 0,
+            LivePointsAfterHits: 30,
+            PreviousTotal: 100,
+            LiveSeasonTotal: 130,
+            ActiveChip: ChipType.None,
+            CaptainElementId: null,
+            ViceCaptainElementId: null,
+            CaptaincyStatus: CaptaincyStatus.CaptainPlayed,
+            EffectiveCaptainElementId: null,
+            AutoSubs: Array.Empty<SubstitutionDto>(),
+            BlockedStarterElementIds: Array.Empty<int>(),
+            AutoSubProjectionFinal: true,
+            Picks: Array.Empty<ManagerLivePickDto>(),
+            CalculatedAtUtc: DateTimeOffset.UtcNow);
+        var cache = new SnapshotHitCacheService(CacheKeys.ManagerLiveSnapshot(123, 5), expected);
+        var fpl = CreateFplClient();
+        var service = CreateService(fpl.Object, Mock.Of<IFplBootstrapService>(), cache);
+
+        var result = await service.GetAsync(123, eventId: 5);
+
+        result.Should().BeSameAs(expected);
+        cache.RequestedKeys.Should().ContainSingle(CacheKeys.ManagerLiveSnapshot(123, 5));
+        fpl.Verify(x => x.GetPicksAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        fpl.Verify(x => x.GetEventLiveAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        fpl.Verify(x => x.GetFixturesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+        fpl.Verify(x => x.GetHistoryAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private static ManagerLiveScoreService CreateService(
         IFplApiClient fpl,
         IFplBootstrapService bootstrap,
@@ -165,5 +202,41 @@ public sealed class ManagerLiveScoreServiceTests
             });
 
         return fpl;
+    }
+
+    private sealed class SnapshotHitCacheService : ICacheService
+    {
+        private readonly string _key;
+        private readonly object _value;
+
+        public SnapshotHitCacheService(string key, object value)
+        {
+            _key = key;
+            _value = value;
+        }
+
+        public List<string> RequestedKeys { get; } = new();
+
+        public Task<T?> GetAsync<T>(string key, CancellationToken ct = default) where T : class
+        {
+            RequestedKeys.Add(key);
+            return Task.FromResult(key == _key ? (T?)_value : null);
+        }
+
+        public Task SetAsync<T>(string key, T value, TimeSpan ttl, CancellationToken ct = default) where T : class
+            => throw new InvalidOperationException("Cached snapshot should not be recomputed.");
+
+        public Task<T> GetOrSetAsync<T>(
+            string key,
+            TimeSpan ttl,
+            Func<CancellationToken, Task<T>> factory,
+            CancellationToken ct = default)
+            where T : class
+            => throw new InvalidOperationException("Cached snapshot should not call downstream cache factories.");
+
+        public Task RemoveAsync(string key, CancellationToken ct = default) => Task.CompletedTask;
+
+        public Task<IAsyncDisposable?> AcquireLockAsync(string key, TimeSpan ttl, CancellationToken ct = default)
+            => throw new InvalidOperationException("Cached snapshot should not acquire a refresh lock.");
     }
 }

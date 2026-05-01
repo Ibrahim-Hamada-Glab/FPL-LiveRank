@@ -4,6 +4,16 @@
 
 html, body {
   height: 100%;
-  background-color: #0f1115;
+  background-color: #0a0d12;
   color: #e7e9ec;
+}
+
+body {
+  margin: 0;
+}
+
+.bg-app {
+  background:
+    linear-gradient(180deg, rgba(20, 29, 44, 0.72) 0, rgba(10, 13, 18, 0.95) 340px),
+    #0a0d12;
 }

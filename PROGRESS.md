@@ -10,11 +10,11 @@
 | 2 | Captaincy projection (vice promotion when captain blanks + team finished) + Angular 19 + Tailwind frontend page | ✅ |
 | 3 | Auto-sub projector (formation-aware, single-use bench), Bench Boost short-circuit, Auto-subs UI panel | ✅ |
 | 4 | League standings import, exact live mini-league rank, Angular league table | ✅ |
-| 5 | SignalR push, Hangfire jobs, Redis snapshot caching | ⏳ next |
-| 6 | Effective ownership, "why my rank changed" explanations | — |
+| 5 | SignalR push, Hangfire jobs, Redis snapshot caching | ✅ |
+| 6 | Effective ownership, "why my rank changed" explanations | ⏳ next |
 | 7 | Test/Docker/README polish | — |
 
-Tests: **50 unit + 6 integration, all passing** (last run 2026-04-28). Angular production build also passes.
+Tests: **63 unit + 8 integration, all passing** (last run 2026-05-01). Angular production build also passes.
 
 ## Architecture invariants (non-obvious)
 
@@ -27,6 +27,10 @@ Tests: **50 unit + 6 integration, all passing** (last run 2026-04-28). Angular p
 6. **Cache contract** (`ICacheService`): `T : class`. Fixtures had to be cached as `List<FplFixture>` rather than `IReadOnlyList<...>` because of JSON deserialization on cache hit.
 7. **Layering**: `Application` cannot reference `Infrastructure`. FPL response DTOs live in `Application/External/Fpl/Models/`, not `Infrastructure/`. Don't move them back.
 8. **xUnit `[Fact]`** is resolved via `tests/FplLiveRank.UnitTests/GlobalUsings.cs` (`global using Xunit;`). The integration tests file uses an explicit `using Xunit;` — leave it; don't add a global using there too.
+9. **Snapshot caching is read-through**: `ManagerLiveScoreService.GetAsync` and `LeagueLiveRankService.GetAsync` cache the *computed DTO* (not just the upstream FPL responses) for ~30s, with a Redis `SET NX PX` lock so concurrent cache-miss callers wait on a single recompute instead of stampeding. The lock implementation in `RedisCacheService` uses a Lua compare-and-delete script — don't replace that with a plain `DEL` or you'll race lock holders. `NullCacheService.AcquireLockAsync` always returns a no-op handle, so unit tests with no Redis behave as if every caller wins the lock.
+10. **`IFplLiveBroadcaster` has two implementations**: `NullFplLiveBroadcaster` (registered by `AddApplication`) and `SignalRFplLiveBroadcaster` (registered by Api Program.cs, replacing the null one via `RemoveAll<IFplLiveBroadcaster>()`). This keeps `Application` testable without the SignalR runtime. SignalR group naming is centralised in `FplLiveHub.{Manager,League,Event}Group(...)` — the broadcaster reuses those helpers, keep them in sync.
+11. **Hangfire uses memory storage** (`Hangfire.MemoryStorage`). Fine for single-instance MVP; for multi-instance deploys swap to `Hangfire.PostgreSql` against the existing `AppDbContext` connection. The recurring job `EventLiveRefreshJob` (id `fpl-event-live-refresh`) ticks every minute and *swallows* exceptions — by design, so transient FPL hiccups don't fill the Hangfire failed-jobs dashboard. If you ever need visibility into those failures, log with a metric instead.
+12. **`Newtonsoft.Json` is pinned to 13.0.3** in `FplLiveRank.Api.csproj` to override the vulnerable 11.x that `Hangfire.MemoryStorage` pulls in transitively (NU1903). If you bump Hangfire and that transitive resolves to a safe version, the pin can be removed — but verify with `dotnet list package --vulnerable --include-transitive`.
 
 ## File map for future work
 
@@ -36,24 +40,42 @@ Tests: **50 unit + 6 integration, all passing** (last run 2026-04-28). Angular p
 - `src/FplLiveRank.Application/Calculators/AutoSubProjector.cs` — formation-validating sub logic.
 
 ### Backend orchestrators
-- `src/FplLiveRank.Application/Services/ManagerLiveScoreService.cs` — the only place these three calculators are wired together.
-- `src/FplLiveRank.Application/Services/LeagueLiveRankService.cs` — pulls paginated classic-league standings, calls `IManagerLiveScoreService.GetAsync` for each member with bounded concurrency, then sorts live ranks.
+
+- `src/FplLiveRank.Application/Services/ManagerLiveScoreService.cs` — the only place these three calculators are wired together. Reads through the manager-live snapshot cache (`SnapshotCache.GetOrComputeAsync`) so concurrent viewers reuse the result.
+- `src/FplLiveRank.Application/Services/ManagerLeaguesService.cs` — maps `GET /entry/{managerId}/` into discoverable classic leagues for the UI and caches the entry profile for 10 min.
+- `src/FplLiveRank.Application/Services/LeagueLiveRankService.cs` — pulls paginated classic-league standings, calls `IManagerLiveScoreService.GetAsync` for each member with bounded concurrency, then sorts live ranks. `RefreshAsync` recomputes under the league refresh lock and broadcasts `LeagueLiveTableUpdated` + `RefreshProgressUpdated` events.
+- `src/FplLiveRank.Application/Services/SnapshotCache.cs` — read-through helper that wraps cache-get + lock-acquire + double-check + compute. Used by both manager and league services. If the lock-holder takes longer than the 8-second poll budget, the helper falls through to compute without lock (rare, but keeps requests live during Redis blips).
+- `src/FplLiveRank.Application/Services/NullFplLiveBroadcaster.cs` — default `IFplLiveBroadcaster` registered by `AddApplication`; replaced by `SignalRFplLiveBroadcaster` in the Api project.
+
+### Background jobs
+
+- `src/FplLiveRank.Application/Jobs/EventLiveRefreshJob.cs` — Hangfire recurring job that re-fetches event-status, event-live, and fixtures every minute, then broadcasts `EventLiveRefreshed`. The recurring schedule is wired in `Program.cs` via `IRecurringJobManager.AddOrUpdate`.
+
+### SignalR
+
+- `src/FplLiveRank.Api/Hubs/FplLiveHub.cs` — hub at `/hubs/fpl-live`. Clients call `JoinManager(id)` / `JoinLeague(id)` / `JoinEvent(id)` (and `Leave...`) to subscribe to update streams.
+- `src/FplLiveRank.Api/Hubs/SignalRFplLiveBroadcaster.cs` — `IFplLiveBroadcaster` impl that fans out to the relevant group. Server-emitted client method names: `ManagerLiveScoreUpdated`, `LeagueLiveTableUpdated`, `EventLiveRefreshed`, `RefreshProgressUpdated`. Mirror these exactly when wiring the Angular SignalR client.
 
 ### Backend DTO
 - `src/FplLiveRank.Application/DTOs/ManagerLiveDto.cs` — every new field surfaced by future calculators goes here. Currently 18 fields + `Picks` list + `SubstitutionDto`. **If you grow this much further, split into nested objects** (`CaptaincyInfo`, `AutoSubInfo`).
 
 ### Frontend
 - `client/src/app/api/manager-live.types.ts` — TS types **mirror** the C# DTO. Whenever you add a field server-side, update here.
-- `client/src/app/api/manager-live.service.ts` — uses `environment.apiBaseUrl` (user added env files in this session — see "Recent user-side changes" below).
+- `client/src/app/api/manager-live.service.ts` — uses `environment.apiBaseUrl` and now exposes both live score and manager-leagues calls.
 - `client/src/app/api/league-live.types.ts` / `league-live.service.ts` — TS contract/client for `GET /api/fpl/league/{id}/live`.
-- `client/src/app/pages/manager-live/manager-live.component.{ts,html}` — single page, signals-based, Tailwind.
+- `client/src/app/pages/manager-live/manager-live.component.{ts,html}` — signals-based page, saves manager ID in localStorage, loads discoverable mini-leagues, and links to league live tables.
 - `client/src/app/pages/league-live/league-live.component.{ts,html}` — sortable/searchable mini-league table.
 - Routing is set up at `client/src/app/app.routes.ts` with lazy routes for `/` and `/league/:id`.
 
 ### Tests
+
 - `tests/FplLiveRank.UnitTests/Calculators/*.cs` — three test files matching the three calculators.
+- `tests/FplLiveRank.UnitTests/Services/ManagerLeaguesServiceTests.cs` — manager entry mapping/cache/validation.
 - `tests/FplLiveRank.UnitTests/Services/LeagueLiveRankServiceTests.cs` — pagination, cache keys, ranking/tie movement, invalid/empty league paths.
-- `tests/FplLiveRank.IntegrationTests/ApiSmokeTests.cs` — `WebApplicationFactory`-driven; uses fakes for `IManagerLiveScoreService` etc. **When you change the DTO**, update the fake response in this file too — the build error is loud but easy to miss in a hurry.
+- `tests/FplLiveRank.UnitTests/Services/SnapshotCachingTests.cs` — Phase 5 snapshot read-through, manual refresh broadcast, and lock-held-elsewhere fallback paths.
+- `tests/FplLiveRank.UnitTests/Jobs/EventLiveRefreshJobTests.cs` — Hangfire job warms the right cache keys and swallows FPL errors.
+- `tests/FplLiveRank.UnitTests/Support/InMemoryCacheService.cs` — Redis-shaped fake (JSON store + atomic NX lock) for Phase 5+ tests. Use it whenever you need real cache semantics; `RecordingCacheService` is still the go-to for "did we ask for this key" assertions.
+- `tests/FplLiveRank.IntegrationTests/ApiSmokeTests.cs` — `WebApplicationFactory`-driven; uses fakes for `IManagerLiveScoreService` etc. **When you change the DTO**, update the fake response in this file too — the build error is loud but easy to miss in a hurry. The `FakeLeagueLiveRankService` exposes a `RefreshCalls` counter for the manual-refresh endpoint test.
 
 ## Recent user-side changes (made between Phase 3 and now)
 
@@ -74,15 +96,24 @@ Plan section 6 covers FPL league endpoint:
 - `ILeagueLiveRankService` / `LeagueLiveRankService` implemented in Application.
 - Endpoint: `GET /api/fpl/league/{leagueId}/live?eventId=`.
 - Angular route: `/league/:id`, sortable/searchable table, manager row links back to `/?managerId=...&eventId=...`.
+- Follow-up UX slice: `GET /api/fpl/manager/{managerId}/leagues`, manager ID localStorage persistence, editable saved manager, and mini-league selection without manually typing a league ID.
 
 **Performance note**: a 50-manager league = 50 calls to `ManagerLiveScoreService.GetAsync`, each of which fans out to 5 FPL endpoints. Even with caching, the first request after a cold cache could hit FPL ~250 times. Consider caching the result of `ManagerLiveScoreService` itself behind a key like `manager:{id}:event:{e}:live` for ~30s during live GWs.
 
-## Phase 5 — concrete starting points
+## Phase 5 — implemented
 
-1. Add a short-lived cached league live-table snapshot (`fpl:league:{id}:live:{eventId}`) so repeated viewers don't recalculate every manager.
-2. Add SignalR hub `/hubs/fpl-live` with `league-{id}`, `manager-{id}`, and `event-{id}` groups.
-3. Add a background refresh job (Hangfire or Quartz) to refresh event live/fixtures/status during active matches.
-4. Add distributed locking for per-league refreshes before adding manual refresh endpoints.
+1. **Snapshot cache** for both `ManagerLiveScoreService` and `LeagueLiveRankService` results: keys `manager:{id}:event:{e}:live` and `league:{id}:event:{e}:live`, TTL 30s. Implemented via `SnapshotCache.GetOrComputeAsync` (read-through with double-check inside the lock).
+2. **Distributed lock** added to `ICacheService.AcquireLockAsync` — Redis-backed via `SET NX PX` and Lua compare-and-delete on release. `NullCacheService` always grants the lock, so unit tests don't need Redis.
+3. **SignalR hub** `/hubs/fpl-live` with `manager-{id}`, `league-{id}`, `event-{id}` groups. `IFplLiveBroadcaster` lives in Application; `SignalRFplLiveBroadcaster` (in Api) replaces the default `NullFplLiveBroadcaster` at startup.
+4. **Hangfire** wired in Api with memory storage. One recurring job: `EventLiveRefreshJob` (every minute) re-warms event-status/event-live/fixtures and broadcasts `EventLiveRefreshed`.
+5. **Manual refresh endpoint** `POST /api/fpl/league/{leagueId}/refresh?eventId={n}` — invokes `LeagueLiveRankService.RefreshAsync`, which takes the per-league refresh lock, recomputes, broadcasts the new table, and returns the fresh DTO. If the lock is already held the endpoint returns the existing snapshot without recomputing (and broadcasts a `skipped` progress event).
+
+## Phase 6 — concrete starting points
+
+1. Add `IEffectiveOwnershipCalculator` (pure) under `Application/Calculators/` — input is the league's manager picks + live stats, output is per-player Ownership / Captaincy / EO / RankImpactPerPoint.
+2. Add `GET /api/fpl/league/{leagueId}/effective-ownership` endpoint and a corresponding service that reuses `LeagueLiveRankService`'s standings fetch + per-manager picks (don't refetch — those are already cached).
+3. "Why my rank changed" — derive a delta between this snapshot's rank and the prior one. Easiest store: keep the prior `LeagueLiveRankDto` in Redis under `league:{id}:event:{e}:live:prev` whenever `RefreshAsync` writes a new snapshot, then compute deltas at read time.
+4. Frontend: new Angular page `/league/:id/eo` with a sortable EO table; reuse the search component from `league-live.component`.
 
 ## How to run + verify
 
@@ -90,7 +121,7 @@ Plan section 6 covers FPL league endpoint:
 # backend
 dotnet restore FplLiveRank.slnx
 dotnet build FplLiveRank.slnx
-dotnet test FplLiveRank.slnx              # 50 unit + 6 integration
+dotnet test FplLiveRank.slnx              # 53 unit + 7 integration
 
 # frontend
 cd client
@@ -104,7 +135,7 @@ docker compose up --build
 ## Known limitations / still to do
 
 - **No EF migrations created.** `AppDbContext` is wired but never `EnsureCreated`'d or migrated. Phase 4 stayed compute-on-demand; Phase 5 snapshot persistence is when this bites.
-- **`PlayerName` / `TeamName` on the DTO are empty strings.** `GET /entry/{id}/` is not wired yet (was on the Phase 2 list, slipped). Cheap to add when needed.
+- **`PlayerName` / `TeamName` on `ManagerLiveDto` are empty strings.** `GET /entry/{id}/` is wired for league discovery, but `ManagerLiveScoreService` intentionally does not call it yet because league live rank would multiply that extra request per member.
 - **No retry on FPL 429.** Polly policy retries 5xx + timeout, doesn't yet honor `Retry-After`. Fine for now (cache TTLs are short and FPL doesn't 429 us in practice).
 - **Frontend has no error boundary.** Service errors render fine, but uncaught rendering errors will white-screen. Add Angular `ErrorHandler` if you ship.
 

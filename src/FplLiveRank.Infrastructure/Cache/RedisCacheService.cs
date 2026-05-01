@@ -10,6 +10,14 @@ public sealed class RedisCacheService : ICacheService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    // Atomic compare-and-delete: only release the lock if we still own the token.
+    private const string ReleaseLockScript = @"
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+else
+    return 0
+end";
+
     private readonly IConnectionMultiplexer _redis;
     private readonly ILogger<RedisCacheService> _logger;
     private readonly RedisCacheOptions _options;
@@ -77,5 +85,54 @@ public sealed class RedisCacheService : ICacheService
         }
     }
 
+    public async Task<IAsyncDisposable?> AcquireLockAsync(string key, TimeSpan ttl, CancellationToken ct = default)
+    {
+        var lockKey = Prefix("lock:" + key);
+        var token = Guid.NewGuid().ToString("N");
+        try
+        {
+            var db = _redis.GetDatabase();
+            var acquired = await db.StringSetAsync(lockKey, token, ttl, When.NotExists).ConfigureAwait(false);
+            return acquired ? new RedisLockHandle(_redis, lockKey, token, _logger) : null;
+        }
+        catch (RedisException ex)
+        {
+            _logger.LogWarning(ex, "Cache LOCK failed for key {Key}", key);
+            // If Redis is unhealthy, fall through without a lock; callers treat null as "could not acquire".
+            return null;
+        }
+    }
+
     private string Prefix(string key) => _options.KeyPrefix + key;
+
+    private sealed class RedisLockHandle : IAsyncDisposable
+    {
+        private readonly IConnectionMultiplexer _redis;
+        private readonly RedisKey _lockKey;
+        private readonly RedisValue _token;
+        private readonly ILogger _logger;
+        private int _disposed;
+
+        public RedisLockHandle(IConnectionMultiplexer redis, RedisKey lockKey, RedisValue token, ILogger logger)
+        {
+            _redis = redis;
+            _lockKey = lockKey;
+            _token = token;
+            _logger = logger;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try
+            {
+                var db = _redis.GetDatabase();
+                await db.ScriptEvaluateAsync(ReleaseLockScript, new[] { _lockKey }, new[] { _token }).ConfigureAwait(false);
+            }
+            catch (RedisException ex)
+            {
+                _logger.LogWarning(ex, "Cache UNLOCK failed for key {Key}", (string)_lockKey!);
+            }
+        }
+    }
 }
