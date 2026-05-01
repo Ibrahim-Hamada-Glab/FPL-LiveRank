@@ -9,6 +9,7 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddScoped<IFplBootstrapService, FplBootstrapService>();
+        services.AddScoped<IManagerLeaguesService, ManagerLeaguesService>();
         services.AddScoped<IManagerLiveScoreService, ManagerLiveScoreService>();
         services.AddScoped<ILeagueLiveRankService, LeagueLiveRankService>();
         return services;

@@ -100,6 +100,32 @@ public sealed class FplApiClientTests
     }
 
     [Fact]
+    public async Task GetManagerEntry_parses_profile_and_classic_leagues()
+    {
+        const string body = """
+        {
+          "player_first_name": "Test",
+          "player_last_name": "Manager",
+          "name": "Test FC",
+          "leagues": {
+            "classic": [
+              { "id": 99, "name": "Friends League", "short_name": null, "league_type": "x", "scoring": "c", "rank": 4, "max_entries": null, "entry_can_leave": true, "entry_can_admin": false, "entry_can_invite": true }
+            ]
+          }
+        }
+        """;
+        var client = CreateClient(HttpStatusCode.OK, body, out var paths);
+
+        var result = await client.GetManagerEntryAsync(123);
+
+        paths.Should().ContainSingle().Which.Should().EndWith("entry/123/");
+        result.Name.Should().Be("Test FC");
+        result.Leagues.Classic.Should().ContainSingle();
+        result.Leagues.Classic[0].Name.Should().Be("Friends League");
+        result.Leagues.Classic[0].EntryCanLeave.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task GetLeagueStandings_parses_paginated_standings()
     {
         const string body = """

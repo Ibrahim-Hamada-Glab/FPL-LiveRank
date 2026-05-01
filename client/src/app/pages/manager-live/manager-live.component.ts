@@ -3,12 +3,18 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ManagerLiveService } from '../../api/manager-live.service';
-import { ApiError, CaptaincyStatus, ManagerLive } from '../../api/manager-live.types';
+import { ApiError, CaptaincyStatus, ManagerLeague, ManagerLeagues, ManagerLive } from '../../api/manager-live.types';
 
 type ViewState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'success'; data: ManagerLive }
+  | { kind: 'error'; error: ApiError };
+
+type LeagueState =
+  | { kind: 'idle' }
+  | { kind: 'loading' }
+  | { kind: 'success'; data: ManagerLeagues }
   | { kind: 'error'; error: ApiError };
 
 @Component({
@@ -18,14 +24,34 @@ type ViewState =
   templateUrl: './manager-live.component.html',
 })
 export class ManagerLiveComponent {
+  private readonly managerStorageKey = 'fpl-live-rank.managerId';
   private readonly service = inject(ManagerLiveService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
 
   managerId = signal<string>('');
-  leagueId = signal<string>('');
+  savedManagerId = signal<string | null>(null);
+  selectedLeagueId = signal<string>('');
   eventId = signal<string>('');
   state = signal<ViewState>({ kind: 'idle' });
+  leagueState = signal<LeagueState>({ kind: 'idle' });
+
+  readonly managerLabel = computed(() => {
+    const s = this.leagueState();
+    if (s.kind === 'success') {
+      return s.data.teamName || s.data.playerName || `#${s.data.managerId}`;
+    }
+    return this.savedManagerId() ? `#${this.savedManagerId()}` : '';
+  });
+
+  readonly discoverableLeagues = computed(() => {
+    const s = this.leagueState();
+    if (s.kind !== 'success') return [];
+    return [...s.data.classicLeagues].sort((a, b) => {
+      const systemSort = Number(a.isSystemLeague) - Number(b.isSystemLeague);
+      return systemSort !== 0 ? systemSort : a.name.localeCompare(b.name);
+    });
+  });
 
   readonly starters = computed(() => {
     const s = this.state();
@@ -51,10 +77,22 @@ export class ManagerLiveComponent {
   constructor() {
     const queryManagerId = this.route.snapshot.queryParamMap.get('managerId');
     const queryEventId = this.route.snapshot.queryParamMap.get('eventId');
-    if (queryManagerId) this.managerId.set(queryManagerId);
-    if (queryEventId) this.eventId.set(queryEventId);
+    const storedManagerId = this.readStoredManagerId();
+
     if (queryManagerId) {
-      queueMicrotask(() => this.fetch());
+      this.managerId.set(queryManagerId);
+      this.saveManagerId(queryManagerId);
+    } else if (storedManagerId) {
+      this.managerId.set(storedManagerId);
+      this.savedManagerId.set(storedManagerId);
+    }
+
+    if (queryEventId) this.eventId.set(queryEventId);
+    if (this.managerId()) {
+      queueMicrotask(() => {
+        this.loadLeagues();
+        if (queryManagerId) this.fetch();
+      });
     }
   }
 
@@ -70,6 +108,8 @@ export class ManagerLiveComponent {
       this.state.set({ kind: 'error', error: { status: 0, title: 'Enter a valid manager id.' } });
       return;
     }
+    this.saveManagerId(String(id));
+
     const ev = Number.parseInt(this.eventId(), 10);
     const eventArg = Number.isFinite(ev) && ev > 0 ? ev : undefined;
 
@@ -80,10 +120,41 @@ export class ManagerLiveComponent {
     });
   }
 
-  openLeague(): void {
-    const id = Number.parseInt(this.leagueId(), 10);
+  loadLeagues(): void {
+    const id = Number.parseInt(this.managerId(), 10);
     if (!Number.isFinite(id) || id <= 0) {
-      this.state.set({ kind: 'error', error: { status: 0, title: 'Enter a valid league id.' } });
+      this.leagueState.set({ kind: 'error', error: { status: 0, title: 'Enter a valid manager id.' } });
+      return;
+    }
+
+    this.saveManagerId(String(id));
+    this.leagueState.set({ kind: 'loading' });
+    this.service.getLeagues(id).subscribe({
+      next: data => {
+        this.leagueState.set({ kind: 'success', data });
+        if (!this.selectedLeagueId() && data.classicLeagues.length > 0) {
+          const firstCustom = data.classicLeagues.find(league => !league.isSystemLeague);
+          this.selectedLeagueId.set(String((firstCustom ?? data.classicLeagues[0]).id));
+        }
+      },
+      error: error => this.leagueState.set({ kind: 'error', error }),
+    });
+  }
+
+  clearSavedManager(): void {
+    this.managerId.set('');
+    this.savedManagerId.set(null);
+    this.selectedLeagueId.set('');
+    this.leagueState.set({ kind: 'idle' });
+    if (this.canUseLocalStorage()) {
+      localStorage.removeItem(this.managerStorageKey);
+    }
+  }
+
+  openSelectedLeague(): void {
+    const id = Number.parseInt(this.selectedLeagueId(), 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      this.leagueState.set({ kind: 'error', error: { status: 0, title: 'Choose a mini-league.' } });
       return;
     }
 
@@ -92,6 +163,11 @@ export class ManagerLiveComponent {
     void this.router.navigate(['/league', id], {
       queryParams: eventArg ? { eventId: eventArg } : {},
     });
+  }
+
+  openLeague(league: ManagerLeague): void {
+    this.selectedLeagueId.set(String(league.id));
+    this.openSelectedLeague();
   }
 
   captaincyLabel(status: CaptaincyStatus): string {
@@ -114,5 +190,25 @@ export class ManagerLiveComponent {
 
   positionLabel(elementType: number): string {
     return ['—', 'GK', 'DEF', 'MID', 'FWD'][elementType] ?? '—';
+  }
+
+  private readStoredManagerId(): string | null {
+    if (!this.canUseLocalStorage()) return null;
+    const value = localStorage.getItem(this.managerStorageKey);
+    return value && Number.parseInt(value, 10) > 0 ? value : null;
+  }
+
+  private saveManagerId(value: string): void {
+    const id = Number.parseInt(value, 10);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const normalized = String(id);
+    this.savedManagerId.set(normalized);
+    if (this.canUseLocalStorage()) {
+      localStorage.setItem(this.managerStorageKey, normalized);
+    }
+  }
+
+  private canUseLocalStorage(): boolean {
+    return typeof localStorage !== 'undefined';
   }
 }
