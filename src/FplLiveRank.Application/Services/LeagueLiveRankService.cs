@@ -2,6 +2,7 @@ using FplLiveRank.Application.DTOs;
 using FplLiveRank.Application.Errors;
 using FplLiveRank.Application.External.Fpl.Models;
 using FplLiveRank.Application.Interfaces;
+using Microsoft.Extensions.Logging;
 
 namespace FplLiveRank.Application.Services;
 
@@ -13,28 +14,107 @@ public sealed class LeagueLiveRankService : ILeagueLiveRankService
     private readonly IFplBootstrapService _bootstrap;
     private readonly IManagerLiveScoreService _managerLiveScores;
     private readonly ICacheService _cache;
+    private readonly IFplLiveBroadcaster _broadcaster;
+    private readonly ILogger<LeagueLiveRankService> _logger;
 
     public LeagueLiveRankService(
         IFplApiClient fpl,
         IFplBootstrapService bootstrap,
         IManagerLiveScoreService managerLiveScores,
-        ICacheService cache)
+        ICacheService cache,
+        IFplLiveBroadcaster broadcaster,
+        ILogger<LeagueLiveRankService> logger)
     {
         _fpl = fpl;
         _bootstrap = bootstrap;
         _managerLiveScores = managerLiveScores;
         _cache = cache;
+        _broadcaster = broadcaster;
+        _logger = logger;
     }
 
     public async Task<LeagueLiveRankDto> GetAsync(int leagueId, int? eventId, CancellationToken ct = default)
+    {
+        ValidateLeagueId(leagueId);
+        var resolvedEventId = eventId ?? (await _bootstrap.GetCurrentEventAsync(ct).ConfigureAwait(false)).Id;
+
+        return await SnapshotCache.GetOrComputeAsync(
+            _cache,
+            CacheKeys.LeagueLiveSnapshot(leagueId, resolvedEventId),
+            CacheKeys.LeagueRefreshLock(leagueId, resolvedEventId),
+            CacheTtl.LeagueLiveSnapshot,
+            CacheTtl.RefreshLock,
+            inner => ComputeAsync(leagueId, resolvedEventId, inner),
+            _logger,
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task<LeagueLiveRankDto> RefreshAsync(int leagueId, int? eventId, CancellationToken ct = default)
+    {
+        ValidateLeagueId(leagueId);
+        var resolvedEventId = eventId ?? (await _bootstrap.GetCurrentEventAsync(ct).ConfigureAwait(false)).Id;
+
+        var lockKey = CacheKeys.LeagueRefreshLock(leagueId, resolvedEventId);
+        var snapshotKey = CacheKeys.LeagueLiveSnapshot(leagueId, resolvedEventId);
+        var previousSnapshotKey = CacheKeys.LeagueLivePreviousSnapshot(leagueId, resolvedEventId);
+
+        await using var handle = await _cache.AcquireLockAsync(lockKey, CacheTtl.RefreshLock, ct).ConfigureAwait(false);
+        if (handle is null)
+        {
+            _logger.LogInformation("League {LeagueId} refresh skipped: another refresh is already in progress", leagueId);
+            await _broadcaster.RefreshProgressUpdated($"league-{leagueId}", "skipped", "another refresh in progress", ct).ConfigureAwait(false);
+            // Return whatever snapshot the in-flight refresh produces (poll briefly), or the existing one.
+            var existing = await _cache.GetAsync<LeagueLiveRankDto>(snapshotKey, ct).ConfigureAwait(false);
+            if (existing is not null) return existing;
+            // Fall through to a forced compute if no snapshot exists at all.
+            var fallback = await ComputeAsync(leagueId, resolvedEventId, ct).ConfigureAwait(false);
+            await _cache.SetAsync(snapshotKey, fallback, CacheTtl.LeagueLiveSnapshot, ct).ConfigureAwait(false);
+            return fallback;
+        }
+
+        await _broadcaster.RefreshProgressUpdated($"league-{leagueId}", "started", null, ct).ConfigureAwait(false);
+        try
+        {
+            var previousSnapshot = await _cache.GetAsync<LeagueLiveRankDto>(snapshotKey, ct).ConfigureAwait(false);
+            var fresh = await ComputeAsync(leagueId, resolvedEventId, ct).ConfigureAwait(false);
+            if (previousSnapshot is not null)
+            {
+                await _cache.SetAsync(
+                    previousSnapshotKey,
+                    previousSnapshot,
+                    CacheTtl.LeagueLivePreviousSnapshot,
+                    ct).ConfigureAwait(false);
+            }
+            await _cache.SetAsync(snapshotKey, fresh, CacheTtl.LeagueLiveSnapshot, ct).ConfigureAwait(false);
+            await _broadcaster.LeagueLiveTableUpdated(fresh, ct).ConfigureAwait(false);
+            await _broadcaster.RefreshProgressUpdated($"league-{leagueId}", "completed", null, ct).ConfigureAwait(false);
+            return fresh;
+        }
+        catch (Exception ex)
+        {
+            await _broadcaster.RefreshProgressUpdated($"league-{leagueId}", "failed", ex.Message, ct).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private static void ValidateLeagueId(int leagueId)
     {
         if (leagueId <= 0)
         {
             throw new Errors.ValidationException(
                 new Dictionary<string, string[]> { [nameof(leagueId)] = new[] { "League ID must be positive." } });
         }
+    }
 
-        var resolvedEventId = eventId ?? (await _bootstrap.GetCurrentEventAsync(ct).ConfigureAwait(false)).Id;
+    private async Task<LeagueLiveRankDto> ComputeAsync(int leagueId, int resolvedEventId, CancellationToken ct)
+    {
+        var previousSnapshot = await _cache.GetAsync<LeagueLiveRankDto>(
+            CacheKeys.LeagueLivePreviousSnapshot(leagueId, resolvedEventId),
+            ct).ConfigureAwait(false);
+        var previousRankByManager = previousSnapshot?.Standings
+            .ToDictionary(x => x.ManagerId, x => x.LiveRank)
+            ?? new Dictionary<int, int>();
+
         var pages = await GetAllStandingsPagesAsync(leagueId, ct).ConfigureAwait(false);
         var league = pages.FirstOrDefault()?.League ?? new LeagueInfo { Id = leagueId };
         var members = pages
@@ -66,7 +146,13 @@ public sealed class LeagueLiveRankService : ILeagueLiveRankService
             .ToList();
 
         var entries = ranked
-            .Select((candidate, index) => ToDto(candidate, index + 1, tiedLiveTotals.Contains(candidate.Score.LiveSeasonTotal)))
+            .Select((candidate, index) => ToDto(
+                candidate,
+                index + 1,
+                tiedLiveTotals.Contains(candidate.Score.LiveSeasonTotal),
+                previousRankByManager.TryGetValue(candidate.Member.Entry, out var previousRank)
+                    ? previousRank
+                    : null))
             .ToList();
 
         return new LeagueLiveRankDto(
@@ -128,7 +214,11 @@ public sealed class LeagueLiveRankService : ILeagueLiveRankService
         return (await Task.WhenAll(tasks).ConfigureAwait(false)).ToList();
     }
 
-    private static LeagueLiveRankEntryDto ToDto(RankCandidate candidate, int liveRank, bool isTied)
+    private static LeagueLiveRankEntryDto ToDto(
+        RankCandidate candidate,
+        int liveRank,
+        bool isTied,
+        int? previousLiveRank)
     {
         var member = candidate.Member;
         var score = candidate.Score;
@@ -136,6 +226,8 @@ public sealed class LeagueLiveRankService : ILeagueLiveRankService
         var captainName = captainElementId.HasValue
             ? score.Picks.FirstOrDefault(p => p.ElementId == captainElementId.Value)?.WebName
             : null;
+
+        var rankDelta = previousLiveRank.HasValue ? previousLiveRank.Value - liveRank : 0;
 
         return new LeagueLiveRankEntryDto(
             ManagerId: member.Entry,
@@ -153,7 +245,30 @@ public sealed class LeagueLiveRankService : ILeagueLiveRankService
             CaptainName: captainName,
             AutoSubs: score.AutoSubs,
             AutoSubProjectionFinal: score.AutoSubProjectionFinal,
-            IsTiedOnLiveTotal: isTied);
+            IsTiedOnLiveTotal: isTied,
+            PreviousLiveRank: previousLiveRank,
+            RankDeltaSincePreviousSnapshot: rankDelta,
+            RankChangeExplanation: BuildRankChangeExplanation(previousLiveRank, rankDelta));
+    }
+
+    private static string BuildRankChangeExplanation(int? previousLiveRank, int rankDelta)
+    {
+        if (!previousLiveRank.HasValue)
+        {
+            return "No prior refresh snapshot yet.";
+        }
+
+        if (rankDelta > 0)
+        {
+            return $"Up {rankDelta} since the previous refresh.";
+        }
+
+        if (rankDelta < 0)
+        {
+            return $"Down {Math.Abs(rankDelta)} since the previous refresh.";
+        }
+
+        return "No rank movement since the previous refresh.";
     }
 
     private sealed record RankCandidate(LeagueStandingResult Member, ManagerLiveDto Score);
