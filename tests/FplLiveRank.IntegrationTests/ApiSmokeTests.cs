@@ -63,6 +63,20 @@ public sealed class ApiSmokeTests : IClassFixture<ApiFactory>
     }
 
     [Fact]
+    public async Task Manager_leagues_endpoint_returns_discoverable_leagues()
+    {
+        var response = await _client.GetAsync("/api/fpl/manager/123/leagues");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = await response.Content.ReadFromJsonAsync<ManagerLeaguesDto>();
+        dto.Should().NotBeNull();
+        dto!.ManagerId.Should().Be(123);
+        dto.TeamName.Should().Be("Test Team");
+        dto.ClassicLeagues.Should().ContainSingle();
+        dto.ClassicLeagues[0].Id.Should().Be(99);
+    }
+
+    [Fact]
     public async Task League_live_endpoint_passes_route_and_query_to_service()
     {
         var response = await _client.GetAsync("/api/fpl/league/99/live?eventId=7");
@@ -116,6 +130,7 @@ public sealed class ApiFactory : IDisposable
                     services.AddControllers()
                         .AddApplicationPart(typeof(ManagerController).Assembly);
                     services.AddSingleton<IFplBootstrapService>(Bootstrap);
+                    services.AddSingleton<IManagerLeaguesService, FakeManagerLeaguesService>();
                     services.AddSingleton<IManagerLiveScoreService, FakeManagerLiveScoreService>();
                     services.AddSingleton<ILeagueLiveRankService, FakeLeagueLiveRankService>();
                 });
@@ -192,6 +207,39 @@ public sealed class FakeManagerLiveScoreService : IManagerLiveScoreService
                 new(10, "Captain", 1, (int)ElementType.Midfielder, 1, 2, true, false, 21, 90, 3, 42)
             },
             CalculatedAtUtc: DateTimeOffset.UtcNow));
+    }
+}
+
+public sealed class FakeManagerLeaguesService : IManagerLeaguesService
+{
+    public Task<ManagerLeaguesDto> GetAsync(int managerId, CancellationToken ct = default)
+    {
+        if (managerId <= 0)
+        {
+            throw new Application.Errors.ValidationException(
+                new Dictionary<string, string[]> { ["managerId"] = new[] { "Manager ID must be positive." } });
+        }
+
+        return Task.FromResult(new ManagerLeaguesDto(
+            ManagerId: managerId,
+            PlayerName: "Test Player",
+            TeamName: "Test Team",
+            ClassicLeagues: new List<ManagerLeagueDto>
+            {
+                new(
+                    Id: 99,
+                    Name: "Test League",
+                    ShortName: null,
+                    LeagueType: "x",
+                    Scoring: "c",
+                    Rank: 2,
+                    MaxEntries: null,
+                    EntryCanLeave: true,
+                    EntryCanAdmin: false,
+                    EntryCanInvite: true,
+                    IsSystemLeague: false)
+            },
+            SyncedAtUtc: DateTimeOffset.UtcNow));
     }
 }
 

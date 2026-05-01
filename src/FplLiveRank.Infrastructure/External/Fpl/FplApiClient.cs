@@ -38,6 +38,9 @@ public sealed class FplApiClient : IFplApiClient
         return result;
     }
 
+    public Task<ManagerEntryResponse> GetManagerEntryAsync(int managerId, CancellationToken ct = default)
+        => GetAsync<ManagerEntryResponse>($"entry/{managerId}/", ct);
+
     public Task<PicksResponse> GetPicksAsync(int managerId, int eventId, CancellationToken ct = default)
         => GetAsync<PicksResponse>($"entry/{managerId}/event/{eventId}/picks/", ct);
 

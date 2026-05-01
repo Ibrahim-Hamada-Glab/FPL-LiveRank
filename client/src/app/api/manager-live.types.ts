@@ -48,6 +48,28 @@ export interface ManagerLive {
   calculatedAtUtc: string;
 }
 
+export interface ManagerLeague {
+  id: number;
+  name: string;
+  shortName: string | null;
+  leagueType: string;
+  scoring: string;
+  rank: number | null;
+  maxEntries: number | null;
+  entryCanLeave: boolean;
+  entryCanAdmin: boolean;
+  entryCanInvite: boolean;
+  isSystemLeague: boolean;
+}
+
+export interface ManagerLeagues {
+  managerId: number;
+  playerName: string;
+  teamName: string;
+  classicLeagues: ManagerLeague[];
+  syncedAtUtc: string;
+}
+
 export interface ApiError {
   status: number;
   title: string;
