@@ -10,6 +10,9 @@ dist/
 .env
 .env.local
 *.log
+TestResults/
+coverage/
+client/coverage/
 
 .fake
 

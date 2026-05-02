@@ -5,7 +5,7 @@ using FplLiveRank.Application.Interfaces;
 using FplLiveRank.Application.Jobs;
 using FplLiveRank.Infrastructure;
 using Hangfire;
-using Hangfire.MemoryStorage;
+using Hangfire.PostgreSql;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Serilog;
 
@@ -34,13 +34,14 @@ try
 
     builder.Services.AddSignalR();
 
-    // Hangfire memory storage is fine for a single-instance MVP. For multi-instance
-    // deployments swap to Hangfire.PostgreSql against the existing AppDbContext database.
+    var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres")
+        ?? "Host=localhost;Port=5432;Database=fpllive;Username=fpllive;Password=fpllive";
+
     builder.Services.AddHangfire(cfg => cfg
         .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
         .UseSimpleAssemblyNameTypeSerializer()
         .UseRecommendedSerializerSettings()
-        .UseMemoryStorage());
+        .UsePostgreSqlStorage(options => options.UseNpgsqlConnection(postgresConnectionString, _ => { })));
     builder.Services.AddHangfireServer();
 
     builder.Services.AddControllers();
