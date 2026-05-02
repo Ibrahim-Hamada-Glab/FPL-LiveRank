@@ -52,14 +52,16 @@ public sealed class ManagerLiveScoreService : IManagerLiveScoreService
         var fixturesTask = GetFixturesAsync(resolvedEventId, ct);
         var historyTask = GetHistoryAsync(managerId, ct);
         var playersTask = _bootstrap.GetPlayersAsync(ct);
+        var entryTask = GetManagerEntryAsync(managerId, ct);
 
-        await Task.WhenAll(picksTask, liveTask, fixturesTask, historyTask, playersTask).ConfigureAwait(false);
+        await Task.WhenAll(picksTask, liveTask, fixturesTask, historyTask, playersTask, entryTask).ConfigureAwait(false);
 
         var picks = picksTask.Result;
         var live = liveTask.Result;
         var fixtures = fixturesTask.Result;
         var history = historyTask.Result;
         var players = playersTask.Result;
+        var entry = entryTask.Result;
 
         if (picks.Picks.Count == 0)
         {
@@ -138,8 +140,8 @@ public sealed class ManagerLiveScoreService : IManagerLiveScoreService
         return new ManagerLiveDto(
             ManagerId: managerId,
             EventId: resolvedEventId,
-            PlayerName: string.Empty,
-            TeamName: string.Empty,
+            PlayerName: BuildPlayerName(entry),
+            TeamName: entry.Name,
             RawLivePoints: breakdown.RawLivePoints,
             TransferCost: breakdown.TransferCost,
             LivePointsAfterHits: breakdown.LivePointsAfterHits,
@@ -185,4 +187,13 @@ public sealed class ManagerLiveScoreService : IManagerLiveScoreService
     private Task<HistoryResponse> GetHistoryAsync(int managerId, CancellationToken ct)
         => _cache.GetOrSetAsync(CacheKeys.ManagerHistory(managerId), CacheTtl.ManagerHistory,
             inner => _fpl.GetHistoryAsync(managerId, inner), ct);
+
+    private Task<ManagerEntryResponse> GetManagerEntryAsync(int managerId, CancellationToken ct)
+        => _cache.GetOrSetAsync(CacheKeys.ManagerEntry(managerId), CacheTtl.ManagerEntry,
+            inner => _fpl.GetManagerEntryAsync(managerId, inner), ct);
+
+    private static string BuildPlayerName(ManagerEntryResponse entry)
+        => string.Join(
+            ' ',
+            new[] { entry.PlayerFirstName, entry.PlayerLastName }.Where(s => !string.IsNullOrWhiteSpace(s)));
 }

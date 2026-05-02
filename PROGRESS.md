@@ -13,17 +13,17 @@
 | 4     | League standings import, exact live mini-league rank, Angular league table                                                         | ✅      |
 | 5     | SignalR push, Hangfire jobs, Redis snapshot caching                                                                                | ✅      |
 | 6     | Effective ownership, "why my rank changed" explanations                                                                            | ✅      |
-| 7     | Test/Docker/README polish (Swagger, Retry-After, Angular ErrorHandler, web container, EO smoke)                                    | ⏳ in progress |
+| 7     | Test/Docker/README polish (migrations, Swagger, Docker, hardening, frontend smoke)                                                 | ✅      |
 
 
-Tests: **70 unit + 9 integration, all passing** (last run 2026-05-02). Angular production build also passes.
+Tests: **70 unit + 9 integration, all passing** (last run 2026-05-02). Angular production build and spec type-check also pass; local Karma runtime is blocked until Chrome/Chromium is installed or `CHROME_BIN` is set.
 
 ## Architecture invariants (non-obvious)
 
 1. **Calculation pipeline order** in `ManagerLiveScoreService.GetAsync`:
   `picks → CaptaincyProjector → AutoSubProjector → LivePointsCalculator`. Don't reorder. Captaincy must run first because vice-promotion depends on official captain status; auto-sub runs after because the bench player coming on does NOT inherit the captain multiplier (FPL rule: if both captain and vice blank, no double points).
 2. **Calculators are pure functions.** No IO, no DI, no logger. Tests construct dictionaries directly. Keep it that way.
-3. `**TreatWarningsAsErrors=true*`* on every `src/` project. NU1903 (vulnerable transitive package) was hit during Phase 1 — pinned `System.Security.Cryptography.Xml` to `10.0.7` in `Infrastructure.csproj` to override the vulnerable transitive from EF Core. If you bump EF or Npgsql, re-check this pin.
+3. **`TreatWarningsAsErrors=true`** on every `src/` project. NU1903 (vulnerable transitive package) was hit during Phase 1 — pinned `System.Security.Cryptography.Xml` to `10.0.7` in `Infrastructure.csproj` to override the vulnerable transitive from EF Core. If you bump EF or Npgsql, re-check this pin.
 4. **Bench Boost** skips auto-sub entirely (FPL already counts all 15 with multiplier=1). The check is in `ManagerLiveScoreService` — `if (activeChip != ChipType.BenchBoost)`.
 5. `**finished_provisional`** counts as "finished" for captaincy/auto-sub decisions. FPL only flips `finished` after bonus is awarded, which is too late for our purposes.
 6. **Cache contract** (`ICacheService`): `T : class`. Fixtures had to be cached as `List<FplFixture>` rather than `IReadOnlyList<...>` because of JSON deserialization on cache hit.
@@ -31,8 +31,8 @@ Tests: **70 unit + 9 integration, all passing** (last run 2026-05-02). Angular p
 8. **xUnit `[Fact]`** is resolved via `tests/FplLiveRank.UnitTests/GlobalUsings.cs` (`global using Xunit;`). The integration tests file uses an explicit `using Xunit;` — leave it; don't add a global using there too.
 9. **Snapshot caching is read-through**: `ManagerLiveScoreService.GetAsync` and `LeagueLiveRankService.GetAsync` cache the *computed DTO* (not just the upstream FPL responses) for ~30s, with a Redis `SET NX PX` lock so concurrent cache-miss callers wait on a single recompute instead of stampeding. The lock implementation in `RedisCacheService` uses a Lua compare-and-delete script — don't replace that with a plain `DEL` or you'll race lock holders. `NullCacheService.AcquireLockAsync` always returns a no-op handle, so unit tests with no Redis behave as if every caller wins the lock.
 10. `**IFplLiveBroadcaster` has two implementations**: `NullFplLiveBroadcaster` (registered by `AddApplication`) and `SignalRFplLiveBroadcaster` (registered by Api Program.cs, replacing the null one via `RemoveAll<IFplLiveBroadcaster>()`). This keeps `Application` testable without the SignalR runtime. SignalR group naming is centralised in `FplLiveHub.{Manager,League,Event}Group(...)` — the broadcaster reuses those helpers, keep them in sync.
-11. **Hangfire uses memory storage** (`Hangfire.MemoryStorage`). Fine for single-instance MVP; for multi-instance deploys swap to `Hangfire.PostgreSql` against the existing `AppDbContext` connection. The recurring job `EventLiveRefreshJob` (id `fpl-event-live-refresh`) ticks every minute and *swallows* exceptions — by design, so transient FPL hiccups don't fill the Hangfire failed-jobs dashboard. If you ever need visibility into those failures, log with a metric instead.
-12. `**Newtonsoft.Json` is pinned to 13.0.3** in `FplLiveRank.Api.csproj` to override the vulnerable 11.x that `Hangfire.MemoryStorage` pulls in transitively (NU1903). If you bump Hangfire and that transitive resolves to a safe version, the pin can be removed — but verify with `dotnet list package --vulnerable --include-transitive`.
+11. **Hangfire uses PostgreSQL storage** (`Hangfire.PostgreSql`) against `ConnectionStrings:Postgres`, so recurring jobs survive restarts and are safe for multi-instance API deployments. Hangfire creates its own tables automatically. The app EF tables are managed by `InitialCreate`.
+12. **Newtonsoft.Json is pinned to 13.0.3** in `FplLiveRank.Api.csproj` as a defensive override for older Hangfire transitive restores. If you bump Hangfire and that transitive resolves to a safe version, the pin can be removed — but verify with `dotnet list package --vulnerable --include-transitive`.
 
 ## File map for future work
 
@@ -122,22 +122,18 @@ Plan section 6 covers FPL league endpoint:
 4. **Rank-change explanations.** `LeagueLiveRankService.RefreshAsync` writes the prior snapshot to `league:{id}:event:{e}:live:prev` (TTL 6h). `LeagueLiveRankEntryDto` exposes `PreviousLiveRank`, `RankDeltaSincePreviousSnapshot`, and a human-readable `RankChangeExplanation`. League-live UI renders the delta inline under the Move column.
 5. **Angular `/league/:id/eo` page** (`pages/league-effective-ownership/`) — sortable EO table, search, optional Manager ID for personalised rank impact, and a back link to the live league table.
 
-## Phase 7 — progress
+## Phase 7 — implemented
 
-### Landed in this batch
-
-1. **Swagger UI** — `Swashbuckle.AspNetCore` 7.2.0 wired via `AddSwaggerGen()` and exposed at `/swagger` in Development alongside `/openapi/v1.json`.
+1. **Swagger UI** — `Swashbuckle.AspNetCore` 10.1.7 wired via `AddSwaggerGen()` and exposed at `/swagger` in Development alongside `/openapi/v1.json`.
 2. **`Retry-After` honoring** — Polly policy moved to `FplLiveRank.Infrastructure.External.Fpl.FplRetryPolicies` so it can be unit-tested without DI. Reads delta-seconds and HTTP-date `Retry-After` headers, falls back to exponential backoff, capped at 30 s. Tests in `Infrastructure/RetryAfterPolicyTests.cs`.
 3. **Angular global `ErrorHandler`** — `client/src/app/core/global-error-handler.ts` registered in `app.config.ts`. Logs to console and renders a dismissible banner so uncaught render errors no longer white-screen the SPA.
 4. **Client Docker image** — `client/Dockerfile` builds the Angular dist on `node:22-alpine`, then serves on `nginx:1.27-alpine` port 8081 with `client/nginx.conf` reverse-proxying `/api` and `/hubs` to the `api` container. `docker-compose.yml` adds a `web` service and an API healthcheck; CORS allowlist includes `http://localhost:8081`.
 5. **EO smoke test** — `League_effective_ownership_endpoint_returns_eo_table` in `ApiSmokeTests` exercises the controller through the test host with a fake EO service.
-
-### Still open
-
-1. **EF Core migrations.** `AppDbContext` is wired but never `EnsureCreated`'d. Add `InitialCreate` and decide whether snapshot persistence (LiveManagerScore / LiveLeagueStanding entities from plan §5) is in scope or stays cache-only.
-2. **README polish.** Expand to cover env vars, run commands (backend / frontend / docker compose), how calculations work, known limitations, and screenshots.
-3. **Hardening leftovers.** `Hangfire.PostgreSql` for multi-instance resilience; surface `PlayerName` / `TeamName` on `ManagerLiveDto` (currently empty) via manager-entry join when the extra FPL hit is acceptable.
-4. **Frontend smoke coverage.** Karma or Playwright check that league live + EO pages render against the API factory; TRX + coverage collector for `dotnet test`.
+6. **EF Core InitialCreate migration** — migration added under `Infrastructure/Persistence/Migrations`. Current decision: live views remain compute-on-demand + Redis snapshot cached; EF tables are ready for later write-behind persistence, but no app path writes live snapshots yet.
+7. **Hangfire PostgreSQL storage** — `Hangfire.MemoryStorage` replaced by `Hangfire.PostgreSql` using the same Postgres connection string as `AppDbContext`.
+8. **Manager name enrichment** — `ManagerLiveScoreService` now populates `PlayerName` and `TeamName` from the cached `manager:{id}:entry` response, removing the empty-string DTO fields.
+9. **Frontend smoke coverage** — Karma specs render the live league and EO standalone pages against fake API responses. `client/package.json` exposes `npm run test:ci`; local execution needs Chrome/Chromium or `CHROME_BIN`.
+10. **README polish** — covers env vars, backend/frontend/docker run paths, migration command, calculation details, screenshots placeholder, TRX + coverage test command, and current limitations.
 
 ## How to run + verify
 
@@ -146,11 +142,13 @@ Plan section 6 covers FPL league endpoint:
 dotnet restore FplLiveRank.slnx
 dotnet build FplLiveRank.slnx
 dotnet test FplLiveRank.slnx              # 70 unit + 9 integration
+dotnet test FplLiveRank.slnx --logger "trx;LogFileName=fpl-live-rank.trx" --collect:"XPlat Code Coverage" --results-directory TestResults
 
 # frontend
 cd client
 npm install                                # only first time
 npm run build                              # or `npm start` for dev server on 4200
+npm run test:ci                            # ChromeHeadless + coverage
 
 # everything together (Postgres + Redis + API + Web)
 docker compose up --build                  # API on :8080, Web on :8081
@@ -159,8 +157,8 @@ docker compose up --build                  # API on :8080, Web on :8081
 
 ## Known limitations / still to do
 
-- **No EF migrations created.** `AppDbContext` is wired but never `EnsureCreated`'d or migrated. Phase 5 snapshot persistence is when this bites.
-- **`PlayerName` / `TeamName` on `ManagerLiveDto` are empty strings.** `GET /entry/{id}/` is wired for league discovery, but `ManagerLiveScoreService` intentionally does not call it yet because league live rank would multiply that extra request per member.
+- **No write-behind persistence yet.** `InitialCreate` exists, but live manager/league views are still computed on demand and cached in Redis. Persisting `LiveManagerScore` / `LivePlayerPoint` snapshots can be a later durability/reporting phase.
+- **Cold large leagues can still fan out.** Manager live snapshots, entry profiles, and league pages are cached, but the first cold request for a large league still performs many public FPL requests.
 
 ## Sandbox-specific gotchas observed this session
 

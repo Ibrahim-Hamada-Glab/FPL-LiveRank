@@ -31,6 +31,8 @@ public sealed class ManagerLiveScoreServiceTests
 
         result.ManagerId.Should().Be(123);
         result.EventId.Should().Be(5);
+        result.PlayerName.Should().Be("Test Manager");
+        result.TeamName.Should().Be("Test Team");
         result.RawLivePoints.Should().Be(25);
         result.TransferCost.Should().Be(4);
         result.LivePointsAfterHits.Should().Be(21);
@@ -108,7 +110,8 @@ public sealed class ManagerLiveScoreServiceTests
             CacheKeys.ManagerPicks(123, 5),
             CacheKeys.EventLive(5),
             CacheKeys.EventFixtures(5),
-            CacheKeys.ManagerHistory(123)
+            CacheKeys.ManagerHistory(123),
+            CacheKeys.ManagerEntry(123)
         });
     }
 
@@ -199,6 +202,13 @@ public sealed class ManagerLiveScoreServiceTests
                     new HistoryCurrentItem { Event = 4, TotalPoints = 90 },
                     new HistoryCurrentItem { Event = 5, TotalPoints = 110 }
                 }
+            });
+        fpl.Setup(x => x.GetManagerEntryAsync(123, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ManagerEntryResponse
+            {
+                PlayerFirstName = "Test",
+                PlayerLastName = "Manager",
+                Name = "Test Team"
             });
 
         return fpl;
